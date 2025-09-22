@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Distributed Agenda - UI</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; }
+    header { display: flex; justify-content: space-between; align-items: center; }
+    section { margin: 16px 0; padding: 12px; border: 1px solid #ddd; border-radius: 6px; }
+    label { display:block; margin: 6px 0 2px; }
+    input, select { padding: 6px; width: 100%; max-width: 360px; }
+    button { margin-top: 8px; }
+    pre { background: #f7f7f7; padding: 8px; overflow: auto; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Distributed Agenda</h1>
+    <div>JWT: <code id="jwtPreview">(none)</code></div>
+  </header>
+
+  <section>
+    <h2>Auth</h2>
+    <div class="row">
+      <div>
+        <h3>Register</h3>
+        <label>Username</label>
+        <input id="reg_username" />
+        <label>Email</label>
+        <input id="reg_email" />
+        <label>Password</label>
+        <input id="reg_password" type="password" />
+        <label>Name</label>
+        <input id="reg_name" />
+        <button id="btn_register">Register</button>
+      </div>
+      <div>
+        <h3>Login</h3>
+        <label>Username</label>
+        <input id="login_username" />
+        <label>Password</label>
+        <input id="login_password" type="password" />
+        <button id="btn_login">Login</button>
+      </div>
+    </div>
+    <pre id="auth_result"></pre>
+  </section>
+
+  <section>
+    <h2>Groups</h2>
+    <label>Name</label>
+    <input id="grp_name" />
+    <label>Description</label>
+    <input id="grp_desc" />
+    <button id="btn_create_group">Create Group</button>
+    <pre id="group_result"></pre>
+
+    <h3>Add Member</h3>
+    <label>Group ID</label>
+    <input id="add_group_id" />
+    <label>User ID</label>
+    <input id="add_user_id" />
+    <label>Rank</label>
+    <input id="add_rank" type="number" />
+    <button id="btn_add_member">Add Member</button>
+    <pre id="member_result"></pre>
+  </section>
+
+  <section>
+    <h2>Create Appointment</h2>
+    <label>Title</label>
+    <input id="appt_title" />
+    <label>Description</label>
+    <input id="appt_desc" />
+    <label>Start (RFC3339)</label>
+    <input id="appt_start" placeholder="2025-09-22T09:00:00Z" />
+    <label>End (RFC3339)</label>
+    <input id="appt_end" placeholder="2025-09-22T10:00:00Z" />
+    <label>Privacy</label>
+    <select id="appt_privacy">
+      <option value="full">full</option>
+      <option value="freebusy">freebusy</option>
+    </select>
+    <label>Group ID (optional)</label>
+    <input id="appt_group_id" />
+    <button id="btn_create_appt">Create</button>
+    <pre id="appt_result"></pre>
+  </section>
+
+  <section>
+    <h2>Agenda</h2>
+    <label>Start</label>
+    <input id="ag_start" placeholder="2025-09-22T00:00:00Z" />
+    <label>End</label>
+    <input id="ag_end" placeholder="2025-09-23T00:00:00Z" />
+    <div class="row">
+      <div>
+        <h3>My Agenda</h3>
+        <button id="btn_my_agenda">Fetch</button>
+        <pre id="my_agenda"></pre>
+      </div>
+      <div>
+        <h3>Group Agenda</h3>
+        <label>Group ID</label>
+        <input id="ag_group_id" />
+        <button id="btn_group_agenda">Fetch</button>
+        <pre id="group_agenda"></pre>
+      </div>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html> 

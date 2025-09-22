@@ -1,0 +1,79 @@
+// interfaces.go
+package agendadistribuida
+
+import "time"
+
+// Repositories define data persistence contracts. They should be pure CRUD-ish.
+// Business rules belong in services, not here.
+
+type UserRepository interface {
+	CreateUser(user *User) error
+	GetUserByUsername(username string) (*User, error)
+}
+
+type GroupRepository interface {
+	CreateGroup(group *Group) error
+	AddGroupMember(groupID, userID int64, rank int, addedBy *int64) error
+	GetMemberRank(groupID, userID int64) (int, error)
+	GetGroupMembers(groupID int64) ([]GroupMember, error)
+	IsSuperior(groupID, userA, userB int64) (bool, error)
+}
+
+type AppointmentRepository interface {
+	CreateAppointment(a *Appointment) error
+	AddParticipant(p *Participant) error
+	HasConflict(userID int64, start, end time.Time) (bool, error)
+	CreateGroupAppointment(a *Appointment) ([]Participant, error)
+	GetUserAgenda(userID int64, start, end time.Time) ([]Appointment, error)
+	GetGroupAgenda(groupID int64, start, end time.Time) ([]Appointment, error)
+}
+
+type NotificationRepository interface {
+	AddNotification(n *Notification) error
+	GetUserNotifications(userID int64) ([]Notification, error)
+}
+
+// Event log for replication and audit. The EventBus can be no-op locally,
+// or publish to a message broker in a distributed deployment.
+type EventRepository interface {
+	AppendEvent(e *Event) error
+}
+
+type EventBus interface {
+	Publish(e Event) error
+}
+
+// Services define business use-cases. They compose repositories and infrastructure.
+
+type AuthService interface {
+	HashPassword(password string) (string, error)
+	CheckPassword(password, hash string) bool
+	GenerateToken(user *User) (string, error)
+	ParseToken(token string) (*Claims, error)
+	Authenticate(username, password string) (*User, string, error)
+}
+
+type GroupService interface {
+	CreateGroup(ownerID int64, name, description string) (*Group, error)
+	AddMember(actorID, groupID, userID int64, rank int) error
+}
+
+type AppointmentService interface {
+	CreatePersonalAppointment(ownerID int64, a Appointment) (*Appointment, error)
+	CreateGroupAppointment(ownerID int64, a Appointment) (*Appointment, []Participant, error)
+}
+
+type AgendaService interface {
+	GetUserAgendaForViewer(viewerID int64, start, end time.Time) ([]Appointment, error)
+	GetGroupAgendaForViewer(viewerID, groupID int64, start, end time.Time) ([]Appointment, error)
+}
+
+type NotificationService interface {
+	List(userID int64) ([]Notification, error)
+	Notify(userID int64, typ string, payload string) error
+}
+
+type ReplicationService interface {
+	EmitAppointmentCreated(a Appointment) error
+	// Future: ResolveConflicts, ApplyRemoteEvent, etc.
+}
