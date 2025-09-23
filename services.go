@@ -11,10 +11,13 @@ import (
 // except for trivial delegations that are safe to wire now.
 
 // authService implements AuthService using existing helpers in auth.go
-type authService struct{}
+type authService struct {
+	users UserRepository
+}
 
-func NewAuthService() AuthService {
-	return &authService{}
+// 🔥 MODIFICADO: constructor recibe el repo
+func NewAuthService(users UserRepository) AuthService {
+	return &authService{users: users}
 }
 
 func (s *authService) HashPassword(password string) (string, error) {
@@ -33,9 +36,20 @@ func (s *authService) ParseToken(token string) (*Claims, error) {
 	return ParseToken(token)
 }
 
+// 🔥 MODIFICADO: usa UserRepository inyectado
 func (s *authService) Authenticate(username, password string) (*User, string, error) {
-	// This requires a UserRepository to fetch user. Keep as placeholder to be wired later
-	return nil, "", ErrNotImplemented
+	user, err := s.users.GetUserByUsername(username)
+	if err != nil {
+		return nil, "", ErrUnauthorized
+	}
+	if !CheckPasswordHash(password, user.PasswordHash) {
+		return nil, "", ErrUnauthorized
+	}
+	token, err := GenerateToken(user)
+	if err != nil {
+		return nil, "", err
+	}
+	return user, token, nil
 }
 
 // groupService composes GroupRepository and NotificationRepository
@@ -48,14 +62,55 @@ func NewGroupService(groups GroupRepository, notes NotificationRepository) Group
 	return &groupService{groups: groups, notes: notes}
 }
 
+// 🔥 MODIFICADO: crear grupo y añadir owner como admin (rank alto)
 func (s *groupService) CreateGroup(ownerID int64, name, description string) (*Group, error) {
-	// Placeholder: create group and add owner as rank 10; notify owner.
-	return nil, ErrNotImplemented
+	now := time.Now()
+	g := &Group{
+		Name:        name,
+		Description: description,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := s.groups.CreateGroup(g); err != nil {
+		return nil, err
+	}
+	// owner como rank más alto (ejemplo: 100)
+	if err := s.groups.AddGroupMember(g.ID, ownerID, 100, nil); err != nil {
+		return nil, err
+	}
+	// notificar dueño
+	payload := fmt.Sprintf(`{"group_id": %d}`, g.ID)
+	if err := s.notes.AddNotification(&Notification{
+		UserID:    ownerID,
+		Type:      "group_created",
+		Payload:   payload,
+		CreatedAt: now,
+	}); err != nil {
+		return nil, err
+	}
+	return g, nil
 }
 
+// 🔥 MODIFICADO: añadir miembro con verificación de jerarquía
 func (s *groupService) AddMember(actorID, groupID, userID int64, rank int) error {
-	// Placeholder: verify actor has higher rank; then add member; notify new member.
-	return ErrNotImplemented
+	actorRank, err := s.groups.GetMemberRank(groupID, actorID)
+	if err != nil {
+		return ErrUnauthorized
+	}
+	if rank >= actorRank {
+		return ErrUnauthorized
+	}
+	if err := s.groups.AddGroupMember(groupID, userID, rank, &actorID); err != nil {
+		return err
+	}
+	// notificar nuevo miembro
+	payload := fmt.Sprintf(`{"group_id": %d}`, groupID)
+	return s.notes.AddNotification(&Notification{
+		UserID:    userID,
+		Type:      "group_invite",
+		Payload:   payload,
+		CreatedAt: time.Now(),
+	})
 }
 
 // appointmentService enforces conflicts, privacy, and hierarchy rules.
@@ -78,22 +133,90 @@ func NewAppointmentService(
 	return &appointmentService{apps: apps, groups: groups, notes: notes, events: events, repl: repl}
 }
 
+// 🔥 MODIFICADO: cita personal
 func (s *appointmentService) CreatePersonalAppointment(ownerID int64, a Appointment) (*Appointment, error) {
-	// Placeholder flow:
-	// - Validate times (start < end), privacy value
-	// - Check HasConflict(ownerID, a.Start, a.End)
-	// - Create appointment
-	// - Add owner as participant accepted
-	// - Notify owner; Emit event
-	return nil, ErrNotImplemented
+	if a.Start.After(a.End) {
+		return nil, ErrInvalidInput
+	}
+	// conflicto
+	conflict, err := s.apps.HasConflict(ownerID, a.Start, a.End)
+	if err != nil {
+		return nil, err
+	}
+	if conflict {
+		return nil, fmt.Errorf("conflict detected")
+	}
+	a.OwnerID = ownerID
+	a.Status = StatusAccepted
+	if err := s.apps.CreateAppointment(&a); err != nil {
+		return nil, err
+	}
+	// añadir owner como participante
+	p := Participant{
+		AppointmentID: a.ID,
+		UserID:        ownerID,
+		Status:        StatusAccepted,
+	}
+	if err := s.apps.AddParticipant(&p); err != nil {
+		return nil, err
+	}
+	// notificación
+	payload := fmt.Sprintf(`{"appointment_id": %d}`, a.ID)
+	if err := s.notes.AddNotification(&Notification{
+		UserID:    ownerID,
+		Type:      "appt_created",
+		Payload:   payload,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		return nil, err
+	}
+	// evento
+	evt := Event{
+		Entity:   "appointment",
+		EntityID: a.ID,
+		Action:   "create",
+		Payload:  payload,
+		Version:  a.Version,
+	}
+	_ = s.events.Publish(evt)
+	_ = s.repl.EmitAppointmentCreated(a)
+	return &a, nil
 }
 
+// 🔥 MODIFICADO: cita grupal
 func (s *appointmentService) CreateGroupAppointment(ownerID int64, a Appointment) (*Appointment, []Participant, error) {
-	// Placeholder flow:
-	// - Validate GroupID != nil; validate times
-	// - Use repo.CreateGroupAppointment to insert and compute participant statuses by rank
-	// - Notify all participants (invite/auto); Emit event
-	return nil, nil, ErrNotImplemented
+	if a.GroupID == nil {
+		return nil, nil, ErrInvalidInput
+	}
+	if a.Start.After(a.End) {
+		return nil, nil, ErrInvalidInput
+	}
+	a.OwnerID = ownerID
+	a.Status = StatusPending // estado inicial global
+	participants, err := s.apps.CreateGroupAppointment(&a)
+	if err != nil {
+		return nil, nil, err
+	}
+	// notificar todos los participantes
+	for _, p := range participants {
+		payload := fmt.Sprintf(`{"appointment_id": %d, "status": "%s"}`, a.ID, p.Status)
+		_ = s.notes.AddNotification(&Notification{
+			UserID:    p.UserID,
+			Type:      "appt_invite",
+			Payload:   payload,
+			CreatedAt: time.Now(),
+		})
+	}
+	// evento
+	evt := Event{
+		Entity:   "appointment",
+		EntityID: a.ID,
+		Action:   "create_group",
+		Version:  a.Version,
+	}
+	_ = s.events.Publish(evt)
+	_ = s.repl.EmitAppointmentCreated(a)
+	return &a, participants, nil
 }
 
 // agendaService applies privacy filtering based on viewer, owner, and hierarchy.

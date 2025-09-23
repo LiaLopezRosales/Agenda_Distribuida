@@ -13,10 +13,23 @@ func main() {
 		log.Fatalf("storage init: %v", err)
 	}
 
-	r := ad.NewRouter(storage)
+	wsManager := ad.NewWSManager()
+	go wsManager.Run()
+
+	// Build services
+	auth := ad.NewAuthService(storage)
+	groups := ad.NewGroupService(storage, storage)
+	apps := ad.NewAppointmentService(storage, storage, storage, ad.NewNoopEventBus(), ad.NewNoopReplication())
+	agenda := ad.NewAgendaService(storage, storage)
+	notes := ad.NewNotificationService(storage)
+
+	api := ad.NewAPI(auth, groups, apps, agenda, notes, storage)
+	r := api.Router()
 
 	// Serve static UI under /ui/
 	r.PathPrefix("/ui/").Handler(http.StripPrefix("/ui/", http.FileServer(http.Dir("web"))))
+	// WebSocket endpoint
+	r.HandleFunc("/ws", ad.ServeWS(storage, wsManager))
 
 	log.Println("listening on :8080 (API) and serving UI at /ui/")
 	if err := http.ListenAndServe(":8080", r); err != nil {
