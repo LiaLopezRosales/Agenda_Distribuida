@@ -167,7 +167,7 @@ type createAppointmentRequest struct {
 	GroupID     *int64    `json:"group_id,omitempty"`
 }
 
-func handleCreateAppointment(storage *Storage) http.HandlerFunc {
+func handleCreateAppointment(storage *Storage, wsManager *WSManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, err := GetUserFromContext(r)
 		if err != nil {
@@ -209,6 +209,12 @@ func handleCreateAppointment(storage *Storage) http.HandlerFunc {
 					Payload:   payload,
 					CreatedAt: time.Now(),
 				})
+				// 🔔 Nuevo: enviar por WebSocket en tiempo real
+				wsManager.BroadcastToUser(p.UserID, map[string]interface{}{
+					"type":           "invite",
+					"appointment_id": appt.ID,
+					"status":         p.Status,
+				})
 			}
 
 			respondJSON(w, http.StatusCreated, map[string]interface{}{
@@ -240,6 +246,11 @@ func handleCreateAppointment(storage *Storage) http.HandlerFunc {
 			Type:      "created",
 			Payload:   fmt.Sprintf(`{"appointment_id": %d}`, appt.ID),
 			CreatedAt: time.Now(),
+		})
+		// 🔔 Nuevo: enviar por WebSocket en tiempo real
+		wsManager.BroadcastToUser(user.ID, map[string]interface{}{
+			"type":           "created",
+			"appointment_id": appt.ID,
 		})
 
 		respondJSON(w, http.StatusCreated, appt)
@@ -333,7 +344,7 @@ func handleGetGroupAgenda(storage *Storage) http.HandlerFunc {
 // Router Setup
 // ======================
 
-func NewRouter(storage *Storage) *mux.Router {
+func NewRouter(storage *Storage, wsManager *WSManager) *mux.Router {
 	r := mux.NewRouter()
 
 	// Auth
@@ -351,7 +362,7 @@ func NewRouter(storage *Storage) *mux.Router {
 	api.HandleFunc("/groups/{groupID}/members", handleAddGroupMember(storage)).Methods("POST")
 
 	// Appointments
-	api.HandleFunc("/appointments", handleCreateAppointment(storage)).Methods("POST")
+	api.HandleFunc("/appointments", handleCreateAppointment(storage, wsManager)).Methods("POST")
 
 	// Agenda
 	api.HandleFunc("/agenda", handleGetUserAgenda(storage)).Methods("GET")

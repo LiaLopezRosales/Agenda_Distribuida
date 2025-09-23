@@ -4,6 +4,7 @@ package agendadistribuida
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -12,6 +13,15 @@ import (
 type Storage struct {
 	db *sql.DB
 }
+
+// 🔥 NUEVO: aseguramos que Storage cumple con todas las interfaces
+var (
+	_ UserRepository         = (*Storage)(nil)
+	_ GroupRepository        = (*Storage)(nil)
+	_ AppointmentRepository  = (*Storage)(nil)
+	_ NotificationRepository = (*Storage)(nil)
+	_ EventRepository        = (*Storage)(nil)
+)
 
 // Inicializa conexión y migraciones
 func NewStorage(dsn string) (*Storage, error) {
@@ -255,20 +265,39 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 		return nil, errors.New("group appointment requires GroupID")
 	}
 
-	// Crear cita
-	if err := s.CreateAppointment(a); err != nil {
-		return nil, err
-	}
-
-	// Obtener miembros
-	members, err := s.GetGroupMembers(*a.GroupID)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
+	rollback := func() { _ = tx.Rollback() }
+
+	now := time.Now()
+	// Insertar cita
+	res, err := tx.Exec(`INSERT INTO appointments(title,description,owner_id,group_id,start_ts,end_ts,privacy,status,version,origin_node,deleted,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.Title, a.Description, a.OwnerID, a.GroupID,
+		a.Start.Unix(), a.End.Unix(), a.Privacy, a.Status,
+		1, a.OriginNode, 0, now, now)
+	if err != nil {
+		rollback()
+		return nil, err
+	}
+	apptID, _ := res.LastInsertId()
+	a.ID = apptID
+	a.CreatedAt = now
+	a.UpdatedAt = now
 
 	// Rank del creador
 	creatorRank, err := s.GetMemberRank(*a.GroupID, a.OwnerID)
 	if err != nil {
+		rollback()
+		return nil, err
+	}
+
+	// Miembros del grupo
+	members, err := s.GetGroupMembers(*a.GroupID)
+	if err != nil {
+		rollback()
 		return nil, err
 	}
 
@@ -280,18 +309,50 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 		} else {
 			status = StatusAuto
 		}
-		p := Participant{
-			AppointmentID: a.ID,
-			UserID:        m.UserID,
-			Status:        status,
-			CreatedAt:     time.Now(),
-			UpdatedAt:     time.Now(),
-		}
-		if err := s.AddParticipant(&p); err != nil {
+		res2, err := tx.Exec(`INSERT INTO participants(appointment_id,user_id,status,is_optional,created_at,updated_at)
+			VALUES(?,?,?,?,?,?)`,
+			apptID, m.UserID, status, 0, now, now)
+		if err != nil {
+			rollback()
 			return nil, err
 		}
+		pid, _ := res2.LastInsertId()
+		p := Participant{
+			ID:            pid,
+			AppointmentID: apptID,
+			UserID:        m.UserID,
+			Status:        status,
+			IsOptional:    false,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
 		participants = append(participants, p)
+
+		// Notificación inicial
+		payload := fmt.Sprintf(`{"appointment_id": %d, "status": "%s"}`, apptID, status)
+		if _, err := tx.Exec(`INSERT INTO notifications(user_id,type,payload,created_at)
+			VALUES(?,?,?,?)`, m.UserID, "invite", payload, now); err != nil {
+			rollback()
+			return nil, err
+		}
 	}
+
+	// Commit
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return nil, err
+	}
+
+	// Evento (fuera de la transacción)
+	evt := &Event{
+		Entity:     "appointment",
+		EntityID:   a.ID,
+		Action:     "create",
+		Payload:    "",
+		OriginNode: a.OriginNode,
+		Version:    a.Version,
+	}
+	_ = s.AppendEvent(evt)
 
 	return participants, nil
 }
@@ -319,6 +380,32 @@ func (s *Storage) GetUserNotifications(userID int64) ([]Notification, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	var notes []Notification
+	for rows.Next() {
+		var n Notification
+		if err := rows.Scan(&n.ID, &n.UserID, &n.Type, &n.Payload, &n.ReadAt, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+// 🔥 NUEVO: marcar notificación como leída
+func (s *Storage) MarkNotificationRead(notificationID int64) error {
+	now := time.Now()
+	_, err := s.db.Exec(`UPDATE notifications SET read_at=? WHERE id=?`, now, notificationID)
+	return err
+}
+
+// 🔥 NUEVO: obtener solo notificaciones no leídas
+func (s *Storage) GetUnreadNotifications(userID int64) ([]Notification, error) {
+	rows, err := s.db.Query(`SELECT id,user_id,type,payload,read_at,created_at FROM notifications WHERE user_id=? AND read_at IS NULL`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
 	var notes []Notification
 	for rows.Next() {
 		var n Notification
@@ -401,4 +488,23 @@ ORDER BY a.start_ts ASC`
 		apps = append(apps, a)
 	}
 	return apps, nil
+}
+
+// ====================
+// Eventos
+// ====================
+
+// 🔥 NUEVO: AppendEvent para EventRepository
+func (s *Storage) AppendEvent(e *Event) error {
+	now := time.Now()
+	res, err := s.db.Exec(`INSERT INTO events(entity, entity_id, action, payload, created_at, origin_node, version)
+		VALUES(?,?,?,?,?,?,?)`,
+		e.Entity, e.EntityID, e.Action, e.Payload, now, e.OriginNode, e.Version)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	e.ID = id
+	e.CreatedAt = now
+	return nil
 }
