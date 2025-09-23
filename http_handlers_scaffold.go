@@ -4,6 +4,7 @@ package agendadistribuida
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -19,6 +20,7 @@ type API struct {
 	apps   AppointmentService
 	agenda AgendaService
 	notes  NotificationService
+	users  UserRepository
 }
 
 // NewAPI builds a router backed by services. Implementation details
@@ -29,6 +31,7 @@ func NewAPI(
 	apps AppointmentService,
 	agenda AgendaService,
 	notes NotificationService,
+	users UserRepository, // 🔥 nuevo parámetro
 ) *API {
 	r := mux.NewRouter()
 	api := &API{
@@ -38,7 +41,9 @@ func NewAPI(
 		apps:   apps,
 		agenda: agenda,
 		notes:  notes,
+		users:  users, // 🔥 nuevo campo
 	}
+
 	// Public
 	r.HandleFunc("/register", api.handleRegister()).Methods("POST")
 	r.HandleFunc("/login", api.handleLogin()).Methods("POST")
@@ -46,12 +51,30 @@ func NewAPI(
 	// Protected
 	protected := r.PathPrefix("/api").Subrouter()
 	protected.Use(func(next http.Handler) http.Handler {
-		// Placeholder: reuse existing AuthMiddleware but needs a UserRepository-backed AuthService
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "middleware not wired", http.StatusUnauthorized)
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, "missing token", http.StatusUnauthorized)
+				return
+			}
+			// Expecting "Bearer <token>"
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+				http.Error(w, "invalid authorization header", http.StatusUnauthorized)
+				return
+			}
+			tokenStr := parts[1]
+			claims, err := api.auth.ParseToken(tokenStr)
+			if err != nil {
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+			ctx := SetUserContext(r.Context(), claims.UserID)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	})
 
+	// Routes protegidas
 	protected.HandleFunc("/groups", api.handleCreateGroup()).Methods("POST")
 	protected.HandleFunc("/groups/{groupID}/members", api.handleAddMember()).Methods("POST")
 	protected.HandleFunc("/appointments", api.handleCreateAppointment()).Methods("POST")
@@ -64,16 +87,53 @@ func NewAPI(
 func (a *API) Router() *mux.Router { return a.router }
 
 func (a *API) handleRegister() http.HandlerFunc {
-	// Placeholder: call a.auth.HashPassword + a user repository through a service
+	type req struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, ErrNotImplemented.Error(), http.StatusNotImplemented)
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		hash, err := a.auth.HashPassword(in.Password)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		u := &User{Username: in.Username, Email: in.Email, DisplayName: in.DisplayName, PasswordHash: hash}
+		if err := a.users.CreateUser(u); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(u)
 	}
 }
 
 func (a *API) handleLogin() http.HandlerFunc {
-	// Placeholder: a.auth.Authenticate
+	type req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, ErrNotImplemented.Error(), http.StatusNotImplemented)
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		user, token, err := a.auth.Authenticate(in.Username, in.Password)
+		if err != nil {
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"user":  user,
+			"token": token,
+		})
 	}
 }
 
@@ -83,8 +143,20 @@ func (a *API) handleCreateGroup() http.HandlerFunc {
 		Description string `json:"description"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, ErrNotImplemented.Error(), http.StatusNotImplemented)
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		uid, _ := GetUserIDFromContext(r.Context())
+		g, err := a.groups.CreateGroup(uid, in.Name, in.Description)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(g)
 	}
+
 }
 
 func (a *API) handleAddMember() http.HandlerFunc {
@@ -93,9 +165,21 @@ func (a *API) handleAddMember() http.HandlerFunc {
 		Rank   int   `json:"rank"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&req{})
-		http.Error(w, ErrNotImplemented.Error(), http.StatusNotImplemented)
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		vars := mux.Vars(r)
+		groupID := parseID(vars["groupID"])
+		actorID, _ := GetUserIDFromContext(r.Context())
+		if err := a.groups.AddMember(actorID, groupID, in.UserID, in.Rank); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
+
 }
 
 func (a *API) handleCreateAppointment() http.HandlerFunc {
@@ -108,18 +192,62 @@ func (a *API) handleCreateAppointment() http.HandlerFunc {
 		GroupID     *int64    `json:"group_id,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, ErrNotImplemented.Error(), http.StatusNotImplemented)
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		uid, _ := GetUserIDFromContext(r.Context())
+		appt := Appointment{
+			Title: in.Title, Description: in.Description,
+			OwnerID: uid, Start: in.Start, End: in.End,
+			Privacy: in.Privacy, GroupID: in.GroupID,
+		}
+		if in.GroupID != nil {
+			created, parts, err := a.apps.CreateGroupAppointment(uid, appt)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"appointment": created, "participants": parts})
+		} else {
+			created, err := a.apps.CreatePersonalAppointment(uid, appt)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(created)
+		}
 	}
+
 }
 
 func (a *API) handleGetUserAgenda() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, ErrNotImplemented.Error(), http.StatusNotImplemented)
+		uid, _ := GetUserIDFromContext(r.Context())
+		start, end := parseTimeRange(r) // helper: parse query params "start", "end"
+		apps, err := a.agenda.GetUserAgendaForViewer(uid, start, end)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(apps)
 	}
+
 }
 
 func (a *API) handleGetGroupAgenda() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, ErrNotImplemented.Error(), http.StatusNotImplemented)
+		uid, _ := GetUserIDFromContext(r.Context())
+		vars := mux.Vars(r)
+		groupID := parseID(vars["groupID"])
+		start, end := parseTimeRange(r)
+		apps, err := a.agenda.GetGroupAgendaForViewer(uid, groupID, start, end)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(apps)
 	}
+
 }

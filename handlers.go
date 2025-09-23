@@ -240,6 +240,14 @@ func handleCreateAppointment(storage *Storage, wsManager *WSManager) http.Handle
 			return
 		}
 
+		// Añadir al dueño como participante aceptado para que aparezca en su agenda y cuente en conflictos
+		_ = storage.AddParticipant(&Participant{
+			AppointmentID: appt.ID,
+			UserID:        user.ID,
+			Status:        StatusAccepted,
+			IsOptional:    false,
+		})
+
 		// Notificación solo al dueño
 		storage.AddNotification(&Notification{
 			UserID:    user.ID,
@@ -270,14 +278,14 @@ func filterAppointmentForViewer(storage *Storage, a Appointment, viewer *User, g
 
 	// Si es cita grupal, chequear jerarquía
 	if groupID != nil && a.GroupID != nil {
-		superior, _ := storage.IsSuperior(viewer.ID, a.OwnerID, *a.GroupID)
+		superior, _ := storage.IsSuperior(*a.GroupID, viewer.ID, a.OwnerID)
 		if superior {
 			return a // superiores ven detalles
 		}
 	}
 
 	// Si privacidad es FreeBusy o el viewer no tiene privilegios -> ocultar detalles
-	if a.Privacy == PrivacyFreeBusy || true {
+	if a.Privacy == PrivacyFreeBusy {
 		a.Title = "Busy"
 		a.Description = ""
 	}
@@ -375,11 +383,11 @@ func NewRouter(storage *Storage, wsManager *WSManager) *mux.Router {
 // Utils
 // ======================
 
-func parseID(idStr string) int64 {
-	var id int64
-	_, err := fmt.Sscan(idStr, &id)
-	if err != nil {
-		return 0
-	}
-	return id
-}
+// func parseID(idStr string) int64 {
+// 	var id int64
+// 	_, err := fmt.Sscan(idStr, &id)
+// 	if err != nil {
+// 		return 0
+// 	}
+// 	return id
+// }
