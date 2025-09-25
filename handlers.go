@@ -129,6 +129,23 @@ func handleCreateGroup(storage *Storage) http.HandlerFunc {
 	}
 }
 
+// NEW: list current user's groups
+func handleListMyGroups(storage *Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, err := GetUserFromContext(r)
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		groups, err := storage.GetGroupsForUser(user.ID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Could not list groups")
+			return
+		}
+		respondJSON(w, http.StatusOK, groups)
+	}
+}
+
 type addMemberRequest struct {
 	UserID int64 `json:"user_id"`
 	Rank   int   `json:"rank"`
@@ -367,6 +384,8 @@ func NewRouter(storage *Storage, wsManager *WSManager) *mux.Router {
 
 	// Groups
 	api.HandleFunc("/groups", handleCreateGroup(storage)).Methods("POST")
+	// NEW: GET /api/groups -> list user's groups
+	api.HandleFunc("/groups", handleListMyGroups(storage)).Methods("GET")
 	api.HandleFunc("/groups/{groupID}/members", handleAddGroupMember(storage)).Methods("POST")
 
 	// Appointments

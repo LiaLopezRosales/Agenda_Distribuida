@@ -84,6 +84,9 @@ func NewAPI(
 	protected.HandleFunc("/notifications", api.handleListNotifications()).Methods("GET")
 	protected.HandleFunc("/notifications/unread", api.handleListUnreadNotifications()).Methods("GET")
 	protected.HandleFunc("/notifications/{id}/read", api.handleMarkNotificationRead()).Methods("POST")
+	// NEW endpoints used by UI
+	protected.HandleFunc("/me", api.handleMe()).Methods("GET")
+	protected.HandleFunc("/groups", api.handleListMyGroups()).Methods("GET")
 
 	return api
 }
@@ -96,6 +99,7 @@ func (a *API) handleRegister() http.HandlerFunc {
 		Password    string `json:"password"`
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
+		Name        string `json:"name"` // UI may send this field instead
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in req
@@ -108,13 +112,26 @@ func (a *API) handleRegister() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		u := &User{Username: in.Username, Email: in.Email, DisplayName: in.DisplayName, PasswordHash: hash}
+		display := in.DisplayName
+		if display == "" {
+			display = in.Name
+		}
+		u := &User{Username: in.Username, Email: in.Email, DisplayName: display, PasswordHash: hash}
 		if err := a.users.CreateUser(u); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// issue token so UI can auto-login after register
+		token, err := a.auth.GenerateToken(u)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(u)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"user":  u,
+			"token": token,
+		})
 	}
 }
 
@@ -290,5 +307,40 @@ func (a *API) handleMarkNotificationRead() http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// NEW: return current authenticated user (used by UI auto-login)
+func (a *API) handleMe() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, _ := GetUserIDFromContext(r.Context())
+		if getter, ok := a.users.(interface{ GetUserByID(int64) (*User, error) }); ok {
+			u, err := getter.GetUserByID(uid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(u)
+			return
+		}
+		http.Error(w, "user repo does not support GetUserByID", http.StatusInternalServerError)
+	}
+}
+
+// NEW: list groups for current user
+func (a *API) handleListMyGroups() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, _ := GetUserIDFromContext(r.Context())
+		// Use duck-typing to call storage's method without changing API fields
+		if grpLister, ok := a.users.(interface{ GetGroupsForUser(int64) ([]Group, error) }); ok {
+			groups, err := grpLister.GetGroupsForUser(uid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(groups)
+			return
+		}
+		http.Error(w, "repository does not support group listing", http.StatusInternalServerError)
 	}
 }

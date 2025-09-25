@@ -9,6 +9,7 @@ import "time"
 type UserRepository interface {
 	CreateUser(user *User) error
 	GetUserByUsername(username string) (*User, error)
+	GetUserByID(id int64) (*User, error)
 }
 
 type GroupRepository interface {
@@ -17,6 +18,7 @@ type GroupRepository interface {
 	GetMemberRank(groupID, userID int64) (int, error)
 	GetGroupMembers(groupID int64) ([]GroupMember, error)
 	IsSuperior(groupID, userA, userB int64) (bool, error)
+	GetGroupsForUser(userID int64) ([]Group, error)
 }
 
 type AppointmentRepository interface {

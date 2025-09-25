@@ -465,6 +465,34 @@
       gap: 12px;
     }
 
+    /* Group Model*/
+    .list-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .list-title h3 {
+      margin: 0;
+    }
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border: 1px solid #dadce0;
+      background: white;
+      color: #5f6368;
+      border-radius: 50%;
+      cursor: pointer;
+      line-height: 26px;
+      text-align: center;
+      font-size: 18px;
+      padding: 0;
+    }
+    .icon-btn:hover {
+      background: #f8f9fa;
+      color: #202124;
+    }
+
     /* Auth Modal */
     .auth-modal {
       position: fixed;
@@ -662,7 +690,10 @@
           </div>
         </div>
         <div class="calendar-list">
-          <h3>Groups</h3>
+          <div class="list-title">
+            <h3>Groups</h3>
+            <button class="icon-btn" id="addGroupBtn" title="Create group">+</button>
+          </div>
           <div id="groupCalendars">
             <!-- Groups will be populated here -->
           </div>
@@ -722,13 +753,39 @@
             <label class="form-label" for="eventGroup">Group (optional)</label>
             <select class="form-input" id="eventGroup">
               <option value="">Personal Event</option>
-            </select>
+    </select>
           </div>
         </form>
       </div>
       <div class="modal-footer">
         <button class="btn" id="cancelEvent">Cancel</button>
         <button class="btn btn-primary" id="saveEvent">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Group Modal -->
+  <div class="modal" id="groupModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">Create Group</h2>
+        <button class="close-btn" id="closeGroupModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="groupForm">
+          <div class="form-group">
+            <label class="form-label" for="groupName">Name *</label>
+            <input type="text" class="form-input" id="groupName" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="groupDesc">Description</label>
+            <input type="text" class="form-input" id="groupDesc">
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="cancelGroup">Cancel</button>
+        <button class="btn btn-primary" id="saveGroup">Save</button>
       </div>
     </div>
   </div>

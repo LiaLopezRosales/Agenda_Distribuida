@@ -146,6 +146,15 @@ func (s *Storage) GetUserByUsername(username string) (*User, error) {
 	return &u, nil
 }
 
+func (s *Storage) GetUserByID(id int64) (*User, error) {
+	row := s.db.QueryRow(`SELECT id, username, email, password_hash, display_name, created_at, updated_at FROM users WHERE id=?`, id)
+	var u User
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.DisplayName, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // ====================
 // Grupos y miembros
 // ====================
@@ -205,6 +214,30 @@ func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
 		members = append(members, gm)
 	}
 	return members, nil
+}
+
+// List all groups the user belongs to
+func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
+	rows, err := s.db.Query(`
+		SELECT g.id, g.name, g.description, g.created_at, g.updated_at
+		FROM groups g
+		JOIN group_members gm ON gm.group_id = g.id
+		WHERE gm.user_id = ?
+		ORDER BY g.name ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, nil
 }
 
 // ====================

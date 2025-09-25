@@ -70,6 +70,18 @@
     $('cancelEvent').onclick = hideEventModal;
     $('saveEvent').onclick = saveEvent;
     
+    // Group creation
+  const addGroupBtn = $('addGroupBtn');
+  if (addGroupBtn) addGroupBtn.addEventListener('click', () => {
+    showGroupModal();
+  });
+  const closeGroupModalBtn = $('closeGroupModal');
+  if (closeGroupModalBtn) closeGroupModalBtn.addEventListener('click', hideGroupModal);
+  const cancelGroupBtn = $('cancelGroup');
+  if (cancelGroupBtn) cancelGroupBtn.addEventListener('click', hideGroupModal);
+  const saveGroupBtn = $('saveGroup');
+  if (saveGroupBtn) saveGroupBtn.addEventListener('click', saveGroup);
+    
     // Calendar cell clicks
     document.addEventListener('click', (e) => {
       if (e.target.classList.contains('day-cell')) {
@@ -139,6 +151,7 @@
       hideAuthModal();
       updateUI();
       loadEvents();
+      loadGroups();
     } catch (error) {
       alert('Login failed: ' + error.message);
     }
@@ -162,6 +175,7 @@
       hideAuthModal();
       updateUI();
       loadEvents();
+      loadGroups();
     } catch (error) {
       alert('Registration failed: ' + error.message);
     }
@@ -171,9 +185,12 @@
     state.token = null;
     state.user = null;
     state.events = [];
+    state.groups = [];
     localStorage.removeItem('token');
     updateUI();
     renderCalendar();
+    updateGroupList();
+    updateEventGroupSelect();
   }
 
   function setToken(token) {
@@ -200,6 +217,7 @@
       state.user = user;
       updateUI();
       loadEvents();
+      loadGroups();
     } catch (error) {
       console.error('Failed to load user info:', error);
       logout();
@@ -425,8 +443,8 @@
     if (!state.token) return;
     
     try {
-      const res = await api('/api/groups');
-      state.groups = res || [];
+      const res = await api('/api/groups'); // GET now lists user's groups
+      state.groups = Array.isArray(res) ? res : [];
       updateGroupList();
       updateEventGroupSelect();
     } catch (error) {
@@ -463,6 +481,47 @@
       option.textContent = group.name;
       select.appendChild(option);
     });
+  }
+
+  function showGroupModal() {
+    const form = $('groupForm');
+    if (form) form.reset();
+    const modal = $('groupModal');
+    if (!modal) return;
+    modal.classList.add('show');
+    modal.style.display = 'flex';
+  }
+  
+  function hideGroupModal() {
+    const modal = $('groupModal');
+    if (!modal) return;
+    modal.classList.remove('show');
+    modal.style.display = 'none';
+  }
+  
+  async function saveGroup() {
+    try {
+      if (!state.token) {
+        hideGroupModal();
+        showAuthModal('login');
+        return;
+      }
+
+      const name = $('groupName').value.trim();
+      const description = $('groupDesc').value.trim();
+      if (!name) { alert('Group name is required'); return; }
+
+      await api('/api/groups', {
+        method: 'POST',
+        body: JSON.stringify({ name, description })
+      });
+
+      hideGroupModal();
+      await loadGroups();
+      updateEventGroupSelect(); // keep the event modal's group list in sync
+    } catch (e) {
+      alert('Failed to create group: ' + e.message);
+    }
   }
 
   function updateEventCounts() {
