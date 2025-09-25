@@ -516,6 +516,66 @@
       display: block;
     }
 
+    /* Auth Modal Updates */
+    .auth-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #dadce0;
+    }
+
+    .auth-title {
+      font-size: 20px;
+      font-weight: 400;
+      color: #202124;
+      margin: 0;
+    }
+
+    .password-input-container {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .password-input-container .form-input {
+      padding-right: 45px; /* Make room for the toggle button */
+    }
+
+    .password-toggle {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.2s;
+      color: #5f6368;
+    }
+
+    .password-toggle:hover {
+      background-color: #f1f3f4;
+      color: #202124;
+    }
+
+    .eye-icon {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
+      transition: fill 0.2s;
+    }
+
+    .password-toggle:hover .eye-icon {
+      fill: #202124;
+    }
+
     /* Responsive */
     @media (max-width: 768px) {
       .sidebar {
@@ -675,6 +735,11 @@
   <!-- Auth Modal -->
   <div class="auth-modal" id="authModal">
     <div class="auth-content">
+      <div class="auth-header">
+        <h2 class="auth-title">Authentication</h2>
+        <button class="close-btn" id="closeAuthModal">&times;</button>
+      </div>
+      
       <div class="auth-tabs">
         <button class="auth-tab active" data-tab="login" id="loginTab">Login</button>
         <button class="auth-tab" data-tab="register" id="registerTab">Register</button>
@@ -687,7 +752,14 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="loginPassword">Password</label>
-          <input type="password" class="form-input" id="loginPassword" required>
+          <div class="password-input-container">
+            <input type="password" class="form-input" id="loginPassword" required>
+            <button type="button" class="password-toggle" id="toggleLoginPassword">
+              <svg class="eye-icon" viewBox="0 0 24 24" width="20" height="20">
+                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <button type="submit" class="btn btn-primary" style="width: 100%;">Login</button>
       </form>
@@ -703,7 +775,14 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="regPassword">Password</label>
-          <input type="password" class="form-input" id="regPassword" required>
+          <div class="password-input-container">
+            <input type="password" class="form-input" id="regPassword" required>
+            <button type="button" class="password-toggle" id="toggleRegPassword">
+              <svg class="eye-icon" viewBox="0 0 24 24" width="20" height="20">
+                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label" for="regName">Full Name</label>
