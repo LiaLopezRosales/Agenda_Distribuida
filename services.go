@@ -282,6 +282,15 @@ func (s *notificationService) Notify(userID int64, typ string, payload string) e
 	return s.notes.AddNotification(n)
 }
 
+// 🔥 nuevo: unread y mark-read
+func (s *notificationService) ListUnread(userID int64) ([]Notification, error) {
+	return s.notes.GetUnreadNotifications(userID)
+}
+
+func (s *notificationService) MarkRead(notificationID int64) error {
+	return s.notes.MarkNotificationRead(notificationID)
+}
+
 // No-op implementations for EventBus and ReplicationService to allow compilation
 // without external infra. Replace with real broker or gRPC later.
 

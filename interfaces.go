@@ -31,6 +31,9 @@ type AppointmentRepository interface {
 type NotificationRepository interface {
 	AddNotification(n *Notification) error
 	GetUserNotifications(userID int64) ([]Notification, error)
+	// 🔥 nuevo: soporte para no leídas y marcar leídas
+	GetUnreadNotifications(userID int64) ([]Notification, error)
+	MarkNotificationRead(notificationID int64) error
 }
 
 // Event log for replication and audit. The EventBus can be no-op locally,
@@ -71,6 +74,9 @@ type AgendaService interface {
 type NotificationService interface {
 	List(userID int64) ([]Notification, error)
 	Notify(userID int64, typ string, payload string) error
+	// 🔥 nuevo: endpoints para UI
+	ListUnread(userID int64) ([]Notification, error)
+	MarkRead(notificationID int64) error
 }
 
 type ReplicationService interface {

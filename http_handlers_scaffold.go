@@ -80,6 +80,10 @@ func NewAPI(
 	protected.HandleFunc("/appointments", api.handleCreateAppointment()).Methods("POST")
 	protected.HandleFunc("/agenda", api.handleGetUserAgenda()).Methods("GET")
 	protected.HandleFunc("/groups/{groupID}/agenda", api.handleGetGroupAgenda()).Methods("GET")
+	// Notifications
+	protected.HandleFunc("/notifications", api.handleListNotifications()).Methods("GET")
+	protected.HandleFunc("/notifications/unread", api.handleListUnreadNotifications()).Methods("GET")
+	protected.HandleFunc("/notifications/{id}/read", api.handleMarkNotificationRead()).Methods("POST")
 
 	return api
 }
@@ -250,4 +254,41 @@ func (a *API) handleGetGroupAgenda() http.HandlerFunc {
 		json.NewEncoder(w).Encode(apps)
 	}
 
+}
+
+// 🔔 Notifications handlers
+func (a *API) handleListNotifications() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, _ := GetUserIDFromContext(r.Context())
+		items, err := a.notes.List(uid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(items)
+	}
+}
+
+func (a *API) handleListUnreadNotifications() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, _ := GetUserIDFromContext(r.Context())
+		items, err := a.notes.ListUnread(uid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(items)
+	}
+}
+
+func (a *API) handleMarkNotificationRead() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		id := parseID(vars["id"])
+		if err := a.notes.MarkRead(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
