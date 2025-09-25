@@ -1,5 +1,15 @@
 (() => {
-  const state = { token: null, ws: null, notifications: [] };
+  const state = { 
+    token: null, 
+    ws: null, 
+    notifications: [],
+    currentDate: new Date(),
+    events: [],
+    groups: [],
+    user: null
+  };
+
+  // API helper
   const api = (path, opts = {}) => {
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
     if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
@@ -12,135 +22,433 @@
     });
   };
 
+  // DOM helpers
   const $ = (id) => document.getElementById(id);
-  const setJSON = (id, data) => { const el = $(id); if (el) el.textContent = JSON.stringify(data, null, 2); };
-  const setToken = (t) => {
-    state.token = t;
-    const el = $('jwtPreview'); if (el) el.textContent = t ? `${t.slice(0,16)}...` : '(none)';
-    connectWS();
-  };
+  const $$ = (selector) => document.querySelectorAll(selector);
 
+  // Initialize app
+  function init() {
+    setupEventListeners();
+    loadStoredAuth();
+    renderCalendar();
+    loadGroups();
+  }
+
+  // Event listeners
+  function setupEventListeners() {
+    // Auth
+    $('loginBtn').onclick = () => showAuthModal('login');
+    $('registerBtn').onclick = () => showAuthModal('register');
+    $('logoutBtn').onclick = logout;
+    
+    // Auth modal
+    $$('.auth-tab').forEach(tab => {
+      tab.onclick = () => switchAuthTab(tab.dataset.tab);
+    });
+    
+    $('loginForm').onsubmit = handleLogin;
+    $('registerForm').onsubmit = handleRegister;
+    
+    // Calendar navigation
+    $('prevMonth').onclick = () => changeMonth(-1);
+    $('nextMonth').onclick = () => changeMonth(1);
+    $('todayBtn').onclick = goToToday;
+    
+    // View switcher
+    $$('.view-btn').forEach(btn => {
+      btn.onclick = () => switchView(btn.dataset.view);
+    });
+    
+    // Event creation
+    $('createEventBtn').onclick = () => showEventModal();
+    $('closeEventModal').onclick = hideEventModal;
+    $('cancelEvent').onclick = hideEventModal;
+    $('saveEvent').onclick = saveEvent;
+    
+    // Calendar cell clicks
+    document.addEventListener('click', (e) => {
+      if (e.target.classList.contains('day-cell')) {
+        const date = e.target.dataset.date;
+        if (date) {
+          showEventModal(new Date(date));
+        }
+      }
+    });
+  }
+
+  // Auth functions
+  function showAuthModal(tab) {
+    $('authModal').style.display = 'flex';
+    switchAuthTab(tab);
+  }
+
+  function hideAuthModal() {
+    $('authModal').style.display = 'none';
+  }
+
+  function switchAuthTab(tab) {
+    $$('.auth-tab').forEach(t => t.classList.remove('active'));
+    $$('.auth-form').forEach(f => f.classList.remove('active'));
+    
+    $(`${tab}Tab`).classList.add('active');
+    $(`${tab}Form`).classList.add('active');
+  }
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    try {
+      const res = await api('/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: $('loginUsername').value,
+          password: $('loginPassword').value
+        })
+      });
+      
+      setToken(res.token);
+      state.user = res.user;
+      hideAuthModal();
+      updateUI();
+      loadEvents();
+    } catch (error) {
+      alert('Login failed: ' + error.message);
+    }
+  }
+
+  async function handleRegister(e) {
+    e.preventDefault();
+    try {
+      const res = await api('/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: $('regUsername').value,
+          email: $('regEmail').value,
+          password: $('regPassword').value,
+          name: $('regName').value
+        })
+      });
+      
+      setToken(res.token);
+      state.user = res.user;
+      hideAuthModal();
+      updateUI();
+      loadEvents();
+    } catch (error) {
+      alert('Registration failed: ' + error.message);
+    }
+  }
+
+  function logout() {
+    state.token = null;
+    state.user = null;
+    state.events = [];
+    localStorage.removeItem('token');
+    updateUI();
+    renderCalendar();
+  }
+
+  function setToken(token) {
+    state.token = token;
+    if (token) {
+      localStorage.setItem('token', token);
+      connectWS();
+    }
+  }
+
+  function loadStoredAuth() {
+    const token = localStorage.getItem('token');
+    if (token) {
+      state.token = token;
+      connectWS();
+      loadUserInfo();
+    }
+  }
+
+  async function loadUserInfo() {
+    try {
+      // Assuming you have a /me endpoint
+      const user = await api('/api/me');
+      state.user = user;
+      updateUI();
+      loadEvents();
+    } catch (error) {
+      console.error('Failed to load user info:', error);
+      logout();
+    }
+  }
+
+  function updateUI() {
+    if (state.token && state.user) {
+      $('authSection').style.display = 'none';
+      $('userInfo').style.display = 'flex';
+      $('userName').textContent = state.user.display_name || state.user.username;
+    } else {
+      $('authSection').style.display = 'flex';
+      $('userInfo').style.display = 'none';
+    }
+  }
+
+  // WebSocket
   function connectWS() {
     try { if (state.ws) state.ws.close(); } catch {}
     if (!state.token) return;
+    
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws?token=${encodeURIComponent(state.token)}`;
     const ws = new WebSocket(url);
     state.ws = ws;
-    ws.onopen = () => { console.log('ws open'); };
+    
+    ws.onopen = () => console.log('WebSocket connected');
     ws.onmessage = (ev) => {
       const lines = ev.data.split('\n');
       for (const line of lines) {
         if (!line) continue;
-        try { state.notifications.unshift(JSON.parse(line)); }
-        catch { state.notifications.unshift({ type: 'raw', payload: line }); }
+        try {
+          const notification = JSON.parse(line);
+          state.notifications.unshift(notification);
+          // Refresh events when we get notifications
+          loadEvents();
+        } catch (e) {
+          console.error('Failed to parse notification:', line);
+        }
       }
-      renderNotifications();
     };
-    ws.onclose = () => { console.log('ws closed'); };
-    ws.onerror = (e) => { console.log('ws error', e); };
+    ws.onclose = () => console.log('WebSocket disconnected');
+    ws.onerror = (e) => console.log('WebSocket error:', e);
   }
 
-  function renderNotifications() {
-    setJSON('notif_list', state.notifications.slice(0, 50));
+  // Calendar functions
+  function renderCalendar() {
+    const calendarGrid = $('calendarGrid');
+    calendarGrid.innerHTML = '';
+    
+    // Day headers
+    const dayHeaders = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    dayHeaders.forEach(day => {
+      const header = document.createElement('div');
+      header.className = 'day-header';
+      header.textContent = day;
+      calendarGrid.appendChild(header);
+    });
+    
+    // Get first day of month and calculate starting date
+    const year = state.currentDate.getFullYear();
+    const month = state.currentDate.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const startDate = new Date(firstDay);
+    startDate.setDate(startDate.getDate() - firstDay.getDay());
+    
+    // Generate 42 days (6 weeks)
+    for (let i = 0; i < 42; i++) {
+      const cellDate = new Date(startDate);
+      cellDate.setDate(startDate.getDate() + i);
+      
+      const cell = document.createElement('div');
+      cell.className = 'day-cell';
+      cell.dataset.date = cellDate.toISOString().split('T')[0];
+      
+      if (cellDate.getMonth() !== month) {
+        cell.classList.add('other-month');
+      }
+      
+      if (isToday(cellDate)) {
+        cell.classList.add('today');
+      }
+      
+      const dayNumber = document.createElement('div');
+      dayNumber.className = 'day-number';
+      dayNumber.textContent = cellDate.getDate();
+      cell.appendChild(dayNumber);
+      
+      // Add events for this day
+      const dayEvents = getEventsForDate(cellDate);
+      dayEvents.forEach(event => {
+        const eventEl = document.createElement('div');
+        eventEl.className = `event ${event.group_id ? 'group-event' : ''} ${event.status}`;
+        eventEl.textContent = event.title;
+        eventEl.title = `${event.title}\n${formatTime(event.start)} - ${formatTime(event.end)}`;
+        cell.appendChild(eventEl);
+      });
+      
+      calendarGrid.appendChild(cell);
+    }
+    
+    // Update current date display
+    $('currentDate').textContent = state.currentDate.toLocaleDateString('en-US', { 
+      month: 'long', 
+      year: 'numeric' 
+    });
   }
 
-  // Auth
-  $('btn_register').onclick = async () => {
+  function getEventsForDate(date) {
+    const dateStr = date.toISOString().split('T')[0];
+    return state.events.filter(event => {
+      const eventDate = new Date(event.start).toISOString().split('T')[0];
+      return eventDate === dateStr;
+    });
+  }
+
+  function isToday(date) {
+    const today = new Date();
+    return date.toDateString() === today.toDateString();
+  }
+
+  function formatTime(dateString) {
+    return new Date(dateString).toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true 
+    });
+  }
+
+  function changeMonth(direction) {
+    state.currentDate.setMonth(state.currentDate.getMonth() + direction);
+    renderCalendar();
+    loadEvents();
+  }
+
+  function goToToday() {
+    state.currentDate = new Date();
+    renderCalendar();
+    loadEvents();
+  }
+
+  function switchView(view) {
+    $$('.view-btn').forEach(btn => btn.classList.remove('active'));
+    $(`[data-view="${view}"]`).classList.add('active');
+    // TODO: Implement different views in Phase 2
+  }
+
+  // Event management
+  function showEventModal(date = null) {
+    if (!state.token) {
+      showAuthModal('login');
+      return;
+    }
+    
+    $('eventModal').classList.add('show');
+    
+    if (date) {
+      const startTime = new Date(date);
+      startTime.setHours(9, 0, 0, 0);
+      const endTime = new Date(startTime);
+      endTime.setHours(10, 0, 0, 0);
+      
+      $('eventStart').value = formatDateTimeLocal(startTime);
+      $('eventEnd').value = formatDateTimeLocal(endTime);
+    }
+  }
+
+  function hideEventModal() {
+    $('eventModal').classList.remove('show');
+    $('eventForm').reset();
+  }
+
+  function formatDateTimeLocal(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  }
+
+  async function saveEvent() {
     try {
-      const body = {
-        username: $('reg_username').value,
-        email: $('reg_email').value,
-        password: $('reg_password').value,
-        name: $('reg_name').value,
+      const formData = {
+        title: $('eventTitle').value,
+        description: $('eventDescription').value,
+        start: new Date($('eventStart').value).toISOString(),
+        end: new Date($('eventEnd').value).toISOString(),
+        privacy: $('eventPrivacy').value,
+        group_id: $('eventGroup').value ? Number($('eventGroup').value) : undefined
       };
-      const res = await api('/register', { method: 'POST', body: JSON.stringify(body) });
-      setJSON('auth_result', res);
-    } catch (e) { setJSON('auth_result', { error: String(e) }); }
-  };
+      
+      const res = await api('/api/appointments', {
+        method: 'POST',
+        body: JSON.stringify(formData)
+      });
+      
+      hideEventModal();
+      loadEvents();
+    } catch (error) {
+      alert('Failed to create event: ' + error.message);
+    }
+  }
 
-  $('btn_login').onclick = async () => {
+  async function loadEvents() {
+    if (!state.token) return;
+    
     try {
-      const body = { username: $('login_username').value, password: $('login_password').value };
-      const res = await api('/login', { method: 'POST', body: JSON.stringify(body) });
-      setToken(res.token);
-      setJSON('auth_result', res);
-    } catch (e) { setJSON('auth_result', { error: String(e) }); }
-  };
+      const start = new Date(state.currentDate.getFullYear(), state.currentDate.getMonth(), 1);
+      const end = new Date(state.currentDate.getFullYear(), state.currentDate.getMonth() + 1, 0);
+      
+      const res = await api(`/api/agenda?start=${start.toISOString()}&end=${end.toISOString()}`);
+      state.events = res || [];
+      renderCalendar();
+      updateEventCounts();
+    } catch (error) {
+      console.error('Failed to load events:', error);
+    }
+  }
 
-  // Groups
-  $('btn_create_group').onclick = async () => {
+  async function loadGroups() {
+    if (!state.token) return;
+    
     try {
-      const body = { name: $('grp_name').value, description: $('grp_desc').value };
-      const res = await api('/api/groups', { method: 'POST', body: JSON.stringify(body) });
-      setJSON('group_result', res);
-    } catch (e) { setJSON('group_result', { error: String(e) }); }
-  };
+      const res = await api('/api/groups');
+      state.groups = res || [];
+      updateGroupList();
+      updateEventGroupSelect();
+    } catch (error) {
+      console.error('Failed to load groups:', error);
+    }
+  }
 
-  $('btn_add_member').onclick = async () => {
-    try {
-      const gid = $('add_group_id').value;
-      const body = { user_id: Number($('add_user_id').value), rank: Number($('add_rank').value) };
-      const res = await api(`/api/groups/${gid}/members`, { method: 'POST', body: JSON.stringify(body) });
-      setJSON('member_result', res);
-    } catch (e) { setJSON('member_result', { error: String(e) }); }
-  };
+  function updateGroupList() {
+    const container = $('groupCalendars');
+    container.innerHTML = '';
+    
+    state.groups.forEach(group => {
+      const item = document.createElement('div');
+      item.className = 'calendar-item';
+      item.dataset.groupId = group.id;
+      
+      item.innerHTML = `
+        <div class="calendar-color" style="background: #34a853;"></div>
+        <span class="calendar-name">${group.name}</span>
+        <span class="calendar-count" id="groupCount${group.id}">0</span>
+      `;
+      
+      container.appendChild(item);
+    });
+  }
 
-  // Appointments
-  $('btn_create_appt').onclick = async () => {
-    try {
-      const gidRaw = $('appt_group_id').value.trim();
-      const body = {
-        title: $('appt_title').value,
-        description: $('appt_desc').value,
-        start: $('appt_start').value,
-        end: $('appt_end').value,
-        privacy: $('appt_privacy').value,
-        group_id: gidRaw ? Number(gidRaw) : undefined,
-      };
-      const res = await api('/api/appointments', { method: 'POST', body: JSON.stringify(body) });
-      setJSON('appt_result', res);
-    } catch (e) { setJSON('appt_result', { error: String(e) }); }
-  };
+  function updateEventGroupSelect() {
+    const select = $('eventGroup');
+    select.innerHTML = '<option value="">Personal Event</option>';
+    
+    state.groups.forEach(group => {
+      const option = document.createElement('option');
+      option.value = group.id;
+      option.textContent = group.name;
+      select.appendChild(option);
+    });
+  }
 
-  // Agenda
-  $('btn_my_agenda').onclick = async () => {
-    try {
-      const start = encodeURIComponent($('ag_start').value);
-      const end = encodeURIComponent($('ag_end').value);
-      const res = await api(`/api/agenda?start=${start}&end=${end}`);
-      setJSON('my_agenda', res);
-    } catch (e) { setJSON('my_agenda', { error: String(e) }); }
-  };
+  function updateEventCounts() {
+    // Update personal count
+    const personalCount = state.events.filter(e => !e.group_id).length;
+    $('personalCount').textContent = personalCount;
+    
+    // Update group counts
+    state.groups.forEach(group => {
+      const groupCount = state.events.filter(e => e.group_id === group.id).length;
+      const countEl = $(`groupCount${group.id}`);
+      if (countEl) countEl.textContent = groupCount;
+    });
+  }
 
-  $('btn_group_agenda').onclick = async () => {
-    try {
-      const gid = $('ag_group_id').value;
-      const start = encodeURIComponent($('ag_start').value);
-      const end = encodeURIComponent($('ag_end').value);
-      const res = await api(`/api/groups/${gid}/agenda?start=${start}&end=${end}`);
-      setJSON('group_agenda', res);
-    } catch (e) { setJSON('group_agenda', { error: String(e) }); }
-  };
-
-  // Notifications
-  const refreshNotifications = async () => {
-    try {
-      const items = await api('/api/notifications');
-      // avoid duplicates by id if the server sent same via WS
-      const byId = new Map(state.notifications.map(n => [n.id, n]));
-      for (const it of items) { if (!byId.has(it.id)) state.notifications.push(it); }
-      renderNotifications();
-    } catch (e) { /* ignore */ }
-  };
-
-  const btnFetchAll = $('btn_fetch_notif'); if (btnFetchAll) btnFetchAll.onclick = refreshNotifications;
-  const btnFetchUnread = $('btn_fetch_unread'); if (btnFetchUnread) btnFetchUnread.onclick = async () => {
-    try { const items = await api('/api/notifications/unread'); setJSON('notif_unread', items); }
-    catch (e) { setJSON('notif_unread', { error: String(e) }); }
-  };
-  const btnMarkRead = $('btn_mark_read'); if (btnMarkRead) btnMarkRead.onclick = async () => {
-    try { const id = Number($('notif_id_to_read').value); await api(`/api/notifications/${id}/read`, { method: 'POST' }); await refreshNotifications(); }
-    catch (e) { /* ignore */ }
-  };
-})(); 
+  // Initialize the app
+  init();
+})();

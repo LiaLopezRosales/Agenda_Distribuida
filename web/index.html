@@ -3,114 +3,717 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Distributed Agenda - UI</title>
+  <title>Distributed Agenda</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; }
-    header { display: flex; justify-content: space-between; align-items: center; }
-    section { margin: 16px 0; padding: 12px; border: 1px solid #ddd; border-radius: 6px; }
-    label { display:block; margin: 6px 0 2px; }
-    input, select { padding: 6px; width: 100%; max-width: 360px; }
-    button { margin-top: 8px; }
-    pre { background: #f7f7f7; padding: 8px; overflow: auto; }
-    .row { display:flex; gap:16px; flex-wrap:wrap; }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f8f9fa;
+      color: #202124;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Header */
+    .header {
+      background: white;
+      border-bottom: 1px solid #dadce0;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      position: relative;
+      z-index: 1000;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .logo {
+      font-size: 22px;
+      font-weight: 400;
+      color: #5f6368;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .logo::before {
+      content: "📅";
+      font-size: 24px;
+    }
+
+    .view-switcher {
+      display: flex;
+      background: #f1f3f4;
+      border-radius: 4px;
+      padding: 4px;
+    }
+
+    .view-btn {
+      padding: 8px 16px;
+      border: none;
+      background: transparent;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #5f6368;
+      transition: all 0.2s;
+    }
+
+    .view-btn.active {
+      background: white;
+      color: #1a73e8;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #5f6368;
+      font-size: 14px;
+    }
+
+    .auth-section {
+      display: flex;
+      gap: 12px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      background: white;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    .btn:hover {
+      background: #f8f9fa;
+    }
+
+    .btn-primary {
+      background: #1a73e8;
+      color: white;
+      border-color: #1a73e8;
+    }
+
+    .btn-primary:hover {
+      background: #1557b0;
+    }
+
+    /* Main Layout */
+    .main-layout {
+      display: flex;
+      height: calc(100vh - 64px);
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 280px;
+      background: white;
+      border-right: 1px solid #dadce0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid #dadce0;
+    }
+
+    .create-event-btn {
+      width: 100%;
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 12px;
+      border-radius: 24px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .create-event-btn:hover {
+      background: #1557b0;
+      box-shadow: 0 2px 4px rgba(26,115,232,0.3);
+    }
+
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .calendar-list {
+      margin-bottom: 24px;
+    }
+
+    .calendar-list h3 {
+      font-size: 14px;
+      font-weight: 500;
+      color: #5f6368;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .calendar-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+
+    .calendar-item:hover {
+      background: #f8f9fa;
+    }
+
+    .calendar-color {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .calendar-name {
+      font-size: 14px;
+      color: #202124;
+      flex: 1;
+    }
+
+    .calendar-count {
+      font-size: 12px;
+      color: #5f6368;
+      background: #f1f3f4;
+      padding: 2px 6px;
+      border-radius: 10px;
+    }
+
+    /* Main Content */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: white;
+    }
+
+    .calendar-header {
+      padding: 16px 24px;
+      border-bottom: 1px solid #dadce0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .calendar-nav {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .nav-btn {
+      width: 40px;
+      height: 40px;
+      border: none;
+      background: transparent;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+
+    .nav-btn:hover {
+      background: #f1f3f4;
+    }
+
+    .current-date {
+      font-size: 22px;
+      font-weight: 400;
+      color: #202124;
+      min-width: 200px;
+    }
+
+    .today-btn {
+      padding: 8px 16px;
+      border: 1px solid #dadce0;
+      background: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #1a73e8;
+    }
+
+    .today-btn:hover {
+      background: #f8f9fa;
+    }
+
+    /* Calendar Grid */
+    .calendar-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      grid-template-rows: 40px repeat(6, 1fr);
+      border-right: 1px solid #dadce0;
+      border-bottom: 1px solid #dadce0;
+    }
+
+    .day-header {
+      background: #f8f9fa;
+      border-bottom: 1px solid #dadce0;
+      border-right: 1px solid #dadce0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 500;
+      color: #5f6368;
+      text-transform: uppercase;
+    }
+
+    .day-cell {
+      border-right: 1px solid #dadce0;
+      border-bottom: 1px solid #dadce0;
+      padding: 4px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .day-cell:hover {
+      background: #f8f9fa;
+    }
+
+    .day-cell.other-month {
+      background: #fafafa;
+      color: #9aa0a6;
+    }
+
+    .day-cell.today {
+      background: #e8f0fe;
+    }
+
+    .day-number {
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .event {
+      background: #1a73e8;
+      color: white;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      margin-bottom: 2px;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+
+    .event:hover {
+      background: #1557b0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+
+    .event.group-event {
+      background: #34a853;
+    }
+
+    .event.pending {
+      background: #fbbc04;
+      color: #202124;
+    }
+
+    .event.declined {
+      background: #ea4335;
+    }
+
+    /* Event Creation Modal */
+    .modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+
+    .modal.show {
+      display: flex;
+    }
+
+    .modal-content {
+      background: white;
+      border-radius: 8px;
+      width: 90%;
+      max-width: 500px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+
+    .modal-header {
+      padding: 24px 24px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-title {
+      font-size: 22px;
+      font-weight: 400;
+      color: #202124;
+    }
+
+    .close-btn {
+      width: 40px;
+      height: 40px;
+      border: none;
+      background: transparent;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      color: #5f6368;
+    }
+
+    .close-btn:hover {
+      background: #f1f3f4;
+    }
+
+    .modal-body {
+      padding: 24px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      color: #202124;
+      margin-bottom: 8px;
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+
+    .form-input:focus {
+      outline: none;
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
+    }
+
+    .form-textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .modal-footer {
+      padding: 0 24px 24px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+    }
+
+    /* Auth Modal */
+    .auth-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+
+    .auth-content {
+      background: white;
+      border-radius: 8px;
+      width: 90%;
+      max-width: 400px;
+      padding: 24px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+
+    .auth-tabs {
+      display: flex;
+      margin-bottom: 24px;
+      border-bottom: 1px solid #dadce0;
+    }
+
+    .auth-tab {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 16px;
+      color: #5f6368;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .auth-tab.active {
+      color: #1a73e8;
+      border-bottom-color: #1a73e8;
+    }
+
+    .auth-form {
+      display: none;
+    }
+
+    .auth-form.active {
+      display: block;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .sidebar {
+        width: 240px;
+      }
+      
+      .form-row {
+        grid-template-columns: 1fr;
+      }
+      
+      .calendar-header {
+        padding: 12px 16px;
+      }
+      
+      .current-date {
+        font-size: 18px;
+        min-width: 150px;
+      }
+    }
+
+    /* Loading states */
+    .loading {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #1a73e8;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Distributed Agenda</h1>
-    <div>JWT: <code id="jwtPreview">(none)</code></div>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">Distributed Agenda</div>
+      <div class="view-switcher">
+        <button class="view-btn active" data-view="month">Month</button>
+        <button class="view-btn" data-view="week">Week</button>
+        <button class="view-btn" data-view="day">Day</button>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="user-info" id="userInfo" style="display: none;">
+        <span id="userName">User</span>
+        <button class="btn" id="logoutBtn">Logout</button>
+      </div>
+      <div class="auth-section" id="authSection">
+        <button class="btn" id="loginBtn">Login</button>
+        <button class="btn btn-primary" id="registerBtn">Register</button>
+      </div>
+    </div>
   </header>
 
-  <section>
-    <h2>Auth</h2>
-    <div class="row">
-      <div>
-        <h3>Register</h3>
-        <label>Username</label>
-        <input id="reg_username" />
-        <label>Email</label>
-        <input id="reg_email" />
-        <label>Password</label>
-        <input id="reg_password" type="password" />
-        <label>Name</label>
-        <input id="reg_name" />
-        <button id="btn_register">Register</button>
+  <!-- Main Layout -->
+  <div class="main-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <button class="create-event-btn" id="createEventBtn">
+          + Create Event
+        </button>
       </div>
-      <div>
-        <h3>Login</h3>
-        <label>Username</label>
-        <input id="login_username" />
-        <label>Password</label>
-        <input id="login_password" type="password" />
-        <button id="btn_login">Login</button>
+      <div class="sidebar-content">
+        <div class="calendar-list">
+          <h3>My Calendars</h3>
+          <div class="calendar-item" data-calendar="personal">
+            <div class="calendar-color" style="background: #1a73e8;"></div>
+            <span class="calendar-name">Personal</span>
+            <span class="calendar-count" id="personalCount">0</span>
+          </div>
+        </div>
+        <div class="calendar-list">
+          <h3>Groups</h3>
+          <div id="groupCalendars">
+            <!-- Groups will be populated here -->
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="calendar-header">
+        <div class="calendar-nav">
+          <button class="nav-btn" id="prevMonth">‹</button>
+          <button class="nav-btn" id="nextMonth">›</button>
+          <div class="current-date" id="currentDate">January 2025</div>
+        </div>
+        <button class="today-btn" id="todayBtn">Today</button>
+      </div>
+      <div class="calendar-grid" id="calendarGrid">
+        <!-- Calendar will be generated here -->
+      </div>
+    </main>
+  </div>
+
+  <!-- Event Creation Modal -->
+  <div class="modal" id="eventModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">Create Event</h2>
+        <button class="close-btn" id="closeEventModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="eventForm">
+          <div class="form-group">
+            <label class="form-label" for="eventTitle">Title *</label>
+            <input type="text" class="form-input" id="eventTitle" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="eventDescription">Description</label>
+            <textarea class="form-input form-textarea" id="eventDescription"></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="eventStart">Start *</label>
+              <input type="datetime-local" class="form-input" id="eventStart" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="eventEnd">End *</label>
+              <input type="datetime-local" class="form-input" id="eventEnd" required>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="eventPrivacy">Privacy</label>
+            <select class="form-input" id="eventPrivacy">
+              <option value="full">Show full details</option>
+              <option value="freebusy">Show only free/busy</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="eventGroup">Group (optional)</label>
+            <select class="form-input" id="eventGroup">
+              <option value="">Personal Event</option>
+            </select>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="cancelEvent">Cancel</button>
+        <button class="btn btn-primary" id="saveEvent">Save</button>
       </div>
     </div>
-    <pre id="auth_result"></pre>
-  </section>
+  </div>
 
-  <section>
-    <h2>Groups</h2>
-    <label>Name</label>
-    <input id="grp_name" />
-    <label>Description</label>
-    <input id="grp_desc" />
-    <button id="btn_create_group">Create Group</button>
-    <pre id="group_result"></pre>
-
-    <h3>Add Member</h3>
-    <label>Group ID</label>
-    <input id="add_group_id" />
-    <label>User ID</label>
-    <input id="add_user_id" />
-    <label>Rank</label>
-    <input id="add_rank" type="number" />
-    <button id="btn_add_member">Add Member</button>
-    <pre id="member_result"></pre>
-  </section>
-
-  <section>
-    <h2>Create Appointment</h2>
-    <label>Title</label>
-    <input id="appt_title" />
-    <label>Description</label>
-    <input id="appt_desc" />
-    <label>Start (RFC3339)</label>
-    <input id="appt_start" placeholder="2025-09-22T09:00:00Z" />
-    <label>End (RFC3339)</label>
-    <input id="appt_end" placeholder="2025-09-22T10:00:00Z" />
-    <label>Privacy</label>
-    <select id="appt_privacy">
-      <option value="full">full</option>
-      <option value="freebusy">freebusy</option>
-    </select>
-    <label>Group ID (optional)</label>
-    <input id="appt_group_id" />
-    <button id="btn_create_appt">Create</button>
-    <pre id="appt_result"></pre>
-  </section>
-
-  <section>
-    <h2>Agenda</h2>
-    <label>Start</label>
-    <input id="ag_start" placeholder="2025-09-22T00:00:00Z" />
-    <label>End</label>
-    <input id="ag_end" placeholder="2025-09-23T00:00:00Z" />
-    <div class="row">
-      <div>
-        <h3>My Agenda</h3>
-        <button id="btn_my_agenda">Fetch</button>
-        <pre id="my_agenda"></pre>
+  <!-- Auth Modal -->
+  <div class="auth-modal" id="authModal">
+    <div class="auth-content">
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login" id="loginTab">Login</button>
+        <button class="auth-tab" data-tab="register" id="registerTab">Register</button>
       </div>
-      <div>
-        <h3>Group Agenda</h3>
-        <label>Group ID</label>
-        <input id="ag_group_id" />
-        <button id="btn_group_agenda">Fetch</button>
-        <pre id="group_agenda"></pre>
-      </div>
+      
+      <form class="auth-form active" id="loginForm">
+        <div class="form-group">
+          <label class="form-label" for="loginUsername">Username</label>
+          <input type="text" class="form-input" id="loginUsername" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="loginPassword">Password</label>
+          <input type="password" class="form-input" id="loginPassword" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%;">Login</button>
+      </form>
+      
+      <form class="auth-form" id="registerForm">
+        <div class="form-group">
+          <label class="form-label" for="regUsername">Username</label>
+          <input type="text" class="form-input" id="regUsername" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="regEmail">Email</label>
+          <input type="email" class="form-input" id="regEmail" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="regPassword">Password</label>
+          <input type="password" class="form-input" id="regPassword" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="regName">Full Name</label>
+          <input type="text" class="form-input" id="regName" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%;">Register</button>
+      </form>
     </div>
-  </section>
+  </div>
 
   <script src="app.js"></script>
 </body>
-</html> 
+</html>
