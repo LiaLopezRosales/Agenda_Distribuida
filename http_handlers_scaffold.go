@@ -14,13 +14,14 @@ import (
 // You can gradually migrate existing handlers to use services.
 
 type API struct {
-	router *mux.Router
-	auth   AuthService
-	groups GroupService
-	apps   AppointmentService
-	agenda AgendaService
-	notes  NotificationService
-	users  UserRepository
+	router     *mux.Router
+	auth       AuthService
+	groups     GroupService
+	apps       AppointmentService
+	agenda     AgendaService
+	notes      NotificationService
+	users      UserRepository
+	groupsRepo GroupRepository // Add direct access to group repository
 }
 
 // NewAPI builds a router backed by services. Implementation details
@@ -31,17 +32,19 @@ func NewAPI(
 	apps AppointmentService,
 	agenda AgendaService,
 	notes NotificationService,
-	users UserRepository, // 🔥 nuevo parámetro
+	users UserRepository,
+	groupsRepo GroupRepository, // Add group repository parameter
 ) *API {
 	r := mux.NewRouter()
 	api := &API{
-		router: r,
-		auth:   auth,
-		groups: groups,
-		apps:   apps,
-		agenda: agenda,
-		notes:  notes,
-		users:  users, // 🔥 nuevo campo
+		router:     r,
+		auth:       auth,
+		groups:     groups,
+		apps:       apps,
+		agenda:     agenda,
+		notes:      notes,
+		users:      users,
+		groupsRepo: groupsRepo, // Store group repository
 	}
 
 	// Public
@@ -87,6 +90,7 @@ func NewAPI(
 	// NEW endpoints used by UI
 	protected.HandleFunc("/me", api.handleMe()).Methods("GET")
 	protected.HandleFunc("/groups", api.handleListMyGroups()).Methods("GET")
+	protected.HandleFunc("/groups/{groupID}", api.handleGetGroupDetail()).Methods("GET")
 
 	return api
 }
@@ -177,7 +181,6 @@ func (a *API) handleCreateGroup() http.HandlerFunc {
 		}
 		json.NewEncoder(w).Encode(g)
 	}
-
 }
 
 func (a *API) handleAddMember() http.HandlerFunc {
@@ -200,7 +203,6 @@ func (a *API) handleAddMember() http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
-
 }
 
 func (a *API) handleCreateAppointment() http.HandlerFunc {
@@ -240,7 +242,6 @@ func (a *API) handleCreateAppointment() http.HandlerFunc {
 			json.NewEncoder(w).Encode(created)
 		}
 	}
-
 }
 
 func (a *API) handleGetUserAgenda() http.HandlerFunc {
@@ -254,7 +255,6 @@ func (a *API) handleGetUserAgenda() http.HandlerFunc {
 		}
 		json.NewEncoder(w).Encode(apps)
 	}
-
 }
 
 func (a *API) handleGetGroupAgenda() http.HandlerFunc {
@@ -270,7 +270,6 @@ func (a *API) handleGetGroupAgenda() http.HandlerFunc {
 		}
 		json.NewEncoder(w).Encode(apps)
 	}
-
 }
 
 // 🔔 Notifications handlers
@@ -314,16 +313,12 @@ func (a *API) handleMarkNotificationRead() http.HandlerFunc {
 func (a *API) handleMe() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, _ := GetUserIDFromContext(r.Context())
-		if getter, ok := a.users.(interface{ GetUserByID(int64) (*User, error) }); ok {
-			u, err := getter.GetUserByID(uid)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			json.NewEncoder(w).Encode(u)
+		u, err := a.users.GetUserByID(uid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Error(w, "user repo does not support GetUserByID", http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(u)
 	}
 }
 
@@ -331,16 +326,38 @@ func (a *API) handleMe() http.HandlerFunc {
 func (a *API) handleListMyGroups() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, _ := GetUserIDFromContext(r.Context())
-		// Use duck-typing to call storage's method without changing API fields
-		if grpLister, ok := a.users.(interface{ GetGroupsForUser(int64) ([]Group, error) }); ok {
-			groups, err := grpLister.GetGroupsForUser(uid)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			json.NewEncoder(w).Encode(groups)
+		groups, err := a.groupsRepo.GetGroupsForUser(uid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Error(w, "repository does not support group listing", http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(groups)
+	}
+}
+
+// NEW: get group details + members
+func (a *API) handleGetGroupDetail() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		gid := parseID(vars["groupID"])
+
+		// Get group details
+		group, err := a.groupsRepo.GetGroupByID(gid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		// Get group members
+		members, err := a.groupsRepo.GetGroupMembers(gid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"group":   group,
+			"members": members,
+		})
 	}
 }

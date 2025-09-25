@@ -467,6 +467,7 @@
         <span class="calendar-count" id="groupCount${group.id}">0</span>
       `;
       
+      item.addEventListener('click', () => openGroupDetails(group.id));
       container.appendChild(item);
     });
   }
@@ -554,6 +555,76 @@
       eyeIcon.innerHTML = `
         <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
       `;
+    }
+  }
+
+  async function openGroupDetails(groupId) {
+    try {
+      if (!state.token) { showAuthModal('login'); return; }
+      const res = await api(`/api/groups/${groupId}`);
+      const { group, members } = res || {};
+      if (!group) return;
+      
+      $('groupDetailsTitle').textContent = group.name;
+      $('groupDetailsDesc').textContent = group.description || '';
+      
+      const list = $('groupMembersList');
+      list.innerHTML = '';
+      
+      // Render members with user_id and rank
+      for (const m of members) {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.justifyContent = 'space-between';
+        row.style.padding = '6px 8px';
+        row.style.borderBottom = '1px solid #eee';
+        row.innerHTML = `<span>User #${m.user_id}</span><span>Rank: ${m.rank}</span>`;
+        list.appendChild(row);
+      }
+      
+      // Bind add member action
+      const addBtn = $('addMemberBtn');
+      addBtn.onclick = async () => {
+        try {
+          const userId = Number(($('newMemberUserId').value || '').trim());
+          const rank = Number(($('newMemberRank').value || '').trim());
+          if (!userId || Number.isNaN(userId)) { 
+            alert('Enter a valid user ID'); 
+            return; 
+          }
+          if (Number.isNaN(rank)) { 
+            alert('Enter a valid rank'); 
+            return; 
+          }
+          
+          await api(`/api/groups/${groupId}/members`, { 
+            method: 'POST', 
+            body: JSON.stringify({ user_id: userId, rank }) 
+          });
+          
+          // Clear form
+          $('newMemberUserId').value = '';
+          $('newMemberRank').value = '';
+          
+          // Reload details
+          await openGroupDetails(groupId);
+        } catch (e) {
+          alert('Failed to add member: ' + e.message);
+        }
+      };
+      
+      // Show modal
+      const modal = $('groupDetailsModal');
+      modal.classList.add('show');
+      modal.style.display = 'flex';
+      
+      const closeBtn = $('closeGroupDetailsModal');
+      closeBtn.onclick = () => { 
+        modal.classList.remove('show'); 
+        modal.style.display = 'none'; 
+      };
+    } catch (e) {
+      alert('Failed to load group details: ' + e.message);
     }
   }
 

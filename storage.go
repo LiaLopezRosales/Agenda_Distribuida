@@ -216,6 +216,16 @@ func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
 	return members, nil
 }
 
+// Fetch group by ID
+func (s *Storage) GetGroupByID(id int64) (*Group, error) {
+	row := s.db.QueryRow(`SELECT id,name,description,created_at,updated_at FROM groups WHERE id=?`, id)
+	var g Group
+	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
 // List all groups the user belongs to
 func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	rows, err := s.db.Query(`

@@ -19,6 +19,7 @@ type GroupRepository interface {
 	GetGroupMembers(groupID int64) ([]GroupMember, error)
 	IsSuperior(groupID, userA, userB int64) (bool, error)
 	GetGroupsForUser(userID int64) ([]Group, error)
+	GetGroupByID(id int64) (*Group, error)
 }
 
 type AppointmentRepository interface {
