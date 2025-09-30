@@ -36,6 +36,8 @@
     loadStoredAuth();
     renderCalendar();
     loadGroups();
+    loadNotifications();
+    updateUnreadNotificationsCount();
   }
 
   // Event listeners
@@ -204,6 +206,26 @@
 
     // Personal Events Modal
     $('closePersonalEventsModal').onclick = hidePersonalEventsModal;
+
+    // Notifications: expand/collapse and refresh
+    const notificationsHeader = $('notificationsHeader');
+    if (notificationsHeader) {
+      notificationsHeader.addEventListener('click', () => {
+        const list = $('notificationsList');
+        if (!list) return;
+        list.style.display = list.style.display === 'none' ? 'block' : 'none';
+      });
+    }
+
+    const refreshNotificationsBtn = $('refreshNotificationsBtn');
+    if (refreshNotificationsBtn) {
+      refreshNotificationsBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        loadNotifications();
+        updateUnreadNotificationsCount();
+      });
+    }
   }
 
   // Auth functions
@@ -265,6 +287,8 @@
       updateUI();
       loadEvents();
       loadGroups();
+      loadNotifications();
+      updateUnreadNotificationsCount();
     } catch (error) {
       alert('Login failed: ' + error.message);
     }
@@ -289,6 +313,8 @@
       updateUI();
       loadEvents();
       loadGroups();
+      loadNotifications();
+      updateUnreadNotificationsCount();
     } catch (error) {
       alert('Registration failed: ' + error.message);
     }
@@ -299,11 +325,16 @@
     state.user = null;
     state.events = [];
     state.groups = [];
+    state.notifications = [];
     localStorage.removeItem('token');
     updateUI();
     renderCalendar();
     updateGroupList();
     updateEventGroupSelect();
+    const list = $('notificationsList');
+    if (list) list.innerHTML = '';
+    const badge = $('unreadNotificationsCount');
+    if (badge) badge.textContent = '0';
   }
 
   function setToken(token) {
@@ -320,6 +351,8 @@
       state.token = token;
       connectWS();
       loadUserInfo();
+      loadNotifications();
+      updateUnreadNotificationsCount();
     }
   }
 
@@ -331,6 +364,8 @@
       updateUI();
       loadEvents();
       loadGroups();
+      loadNotifications();
+      updateUnreadNotificationsCount();
     } catch (error) {
       console.error('Failed to load user info:', error);
       logout();
@@ -368,6 +403,8 @@
           state.notifications.unshift(notification);
           // Refresh events when we get notifications
           loadEvents();
+          updateUnreadNotificationsCount();
+          renderNotificationsList(); // keep list and badge in sync when live notifications arrive
         } catch (e) {
           console.error('Failed to parse notification:', line);
         }
@@ -1494,6 +1531,105 @@
     }
     
     renderPersonalEventsList(filteredEvents);
+  }
+
+  async function loadNotifications() {
+    if (!state.token) return;
+    try {
+      const items = await api('/api/notifications');
+      // Sort by created_at descending
+      items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      state.notifications = items;
+      renderNotificationsList();
+    } catch (err) {
+      console.error('Failed to load notifications:', err);
+    }
+  }
+
+  async function updateUnreadNotificationsCount() {
+    if (!state.token) {
+      const badge = $('unreadNotificationsCount');
+      if (badge) badge.textContent = '0';
+      return;
+    }
+    try {
+      const unread = await api('/api/notifications/unread');
+      const badge = $('unreadNotificationsCount');
+      if (badge) badge.textContent = String(unread.length);
+    } catch (err) {
+      console.error('Failed to load unread notifications:', err);
+    }
+  }
+
+  function renderNotificationsList() {
+    const container = $('notificationsList');
+    if (!container) return;
+
+    const items = state.notifications || [];
+    if (!items.length) {
+      container.innerHTML = '<div class="notification-item"><div class="notification-content"><div class="notification-title">No notifications</div></div></div>';
+      return;
+    }
+
+    container.innerHTML = items.map(n => {
+      const unread = !n.read_at;
+      const title = escapeHtml(parseNotificationTitle(n));
+      const created = formatDateTime(n.created_at);
+      return `
+        <div class="notification-item ${unread ? 'unread' : ''}" data-id="${n.id}">
+          <div class="notification-dot"></div>
+          <div class="notification-content">
+            <div class="notification-title">${title}</div>
+            <div class="notification-meta">${created}${unread ? ' · Unread' : ''}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Attach click handlers to mark-as-read
+    container.querySelectorAll('.notification-item').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = el.getAttribute('data-id');
+        const item = (state.notifications || []).find(x => String(x.id) === String(id));
+        if (!item || item.read_at) return; // already read
+        try {
+          await api(`/api/notifications/${id}/read`, { method: 'POST' });
+          // Update local state
+          item.read_at = new Date().toISOString();
+          el.classList.remove('unread');
+          updateUnreadNotificationsCount();
+        } catch (err) {
+          console.error('Failed to mark notification read:', err);
+        }
+      });
+    });
+  }
+
+  // Small util to prevent XSS when injecting text
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatDateTime(dt) {
+    try {
+      const d = new Date(dt);
+      return d.toLocaleString();
+    } catch {
+      return dt;
+    }
+  }
+
+  function parseNotificationTitle(n) {
+    // Try to use payload JSON title if present; fallback to type
+    try {
+      const payload = n.payload ? JSON.parse(n.payload) : null;
+      if (payload && payload.title) return payload.title;
+    } catch {}
+    return n.type || 'Notification';
   }
 
   // Initialize the app

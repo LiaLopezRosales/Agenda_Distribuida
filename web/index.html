@@ -1687,6 +1687,49 @@
     #eventDetailsModal .modal-content {
       position: relative; /* ensure stacking context for inner elements */
     }
+
+    .notifications-list {
+      margin-top: 8px;
+    }
+
+    .notification-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid #f1f3f4;
+    }
+
+    .notification-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-top: 6px;
+      flex-shrink: 0;
+      background: #9aa0a6;
+    }
+
+    .notification-item.unread .notification-dot {
+      background: #1a73e8;
+    }
+
+    .notification-content {
+      flex: 1;
+    }
+
+    .notification-title {
+      font-size: 14px;
+      color: #202124;
+    }
+
+    .notification-item.unread .notification-title {
+      font-weight: 600;
+    }
+
+    .notification-meta {
+      font-size: 12px;
+      color: #5f6368;
+    }
   </style>
 </head>
 <body>
@@ -1722,6 +1765,17 @@
         </button>
       </div>
       <div class="sidebar-content">
+        <div class="calendar-list" id="notificationsSection">
+          <div class="list-title" style="display: flex; align-items: center; justify-content: space-between;">
+            <h3 id="notificationsHeader" style="cursor: pointer;">
+              Notifications <span class="calendar-count" id="unreadNotificationsCount">0</span>
+            </h3>
+            <button class="icon-btn" id="refreshNotificationsBtn" title="Refresh">↻</button>
+          </div>
+          <div id="notificationsList" class="notifications-list" style="display: none;">
+            <!-- Notifications will be rendered here -->
+          </div>
+        </div>
         <div class="calendar-list">
           <h3>My Calendars</h3>
           <div class="calendar-item" data-calendar="personal">
