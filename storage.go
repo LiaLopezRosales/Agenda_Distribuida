@@ -583,15 +583,45 @@ WHERE a.id = ? AND a.deleted = 0`
 
 // GetAppointmentParticipants retrieves all participants for an appointment with user details
 func (s *Storage) GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error) {
+	// Check if all users exist, create missing ones if needed
+	rows, err := s.db.Query(`SELECT DISTINCT user_id FROM participants WHERE appointment_id = ?`, appointmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var userIDs []int64
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			continue
+		}
+		userIDs = append(userIDs, userID)
+	}
+
+	// Create missing users
+	for _, userID := range userIDs {
+		var count int
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE id = ?`, userID).Scan(&count)
+		if err == nil && count == 0 {
+			// Create a placeholder user
+			_, _ = s.db.Exec(`INSERT INTO users(id, username, email, password_hash, display_name, created_at, updated_at) 
+				VALUES(?, ?, ?, ?, ?, ?, ?)`,
+				userID, fmt.Sprintf("user_%d", userID), "", "", fmt.Sprintf("User %d", userID), time.Now(), time.Now())
+		}
+	}
+
 	q := `
 SELECT p.id, p.appointment_id, p.user_id, p.status, p.is_optional,
-       p.created_at, p.updated_at, u.username, u.display_name
+       p.created_at, p.updated_at, 
+       COALESCE(u.username, 'Unknown') as username, 
+       COALESCE(u.display_name, 'Unknown User') as display_name
 FROM participants p
-JOIN users u ON p.user_id = u.id
+LEFT JOIN users u ON p.user_id = u.id
 WHERE p.appointment_id = ?
 ORDER BY p.created_at ASC`
 
-	rows, err := s.db.Query(q, appointmentID)
+	rows, err = s.db.Query(q, appointmentID)
 	if err != nil {
 		return nil, err
 	}
