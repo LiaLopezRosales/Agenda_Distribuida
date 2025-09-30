@@ -226,6 +226,16 @@
         updateUnreadNotificationsCount();
       });
     }
+
+    // Groups: expand/collapse
+    const groupsHeader = $('groupsHeader');
+    if (groupsHeader) {
+      groupsHeader.addEventListener('click', () => {
+        const list = $('groupCalendars');
+        if (!list) return;
+        list.style.display = list.style.display === 'none' ? 'block' : 'none';
+      });
+    }
   }
 
   // Auth functions
