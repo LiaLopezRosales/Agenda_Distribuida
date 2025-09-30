@@ -8,7 +8,9 @@
     selectedDate: null, // Add this for calendar picker
     events: [],
     groups: [],
-    user: null
+    user: null,
+    personalEvents: [], // Add this line
+    viewingFromPersonal: false // Add this line
   };
 
   // API helper
@@ -120,6 +122,34 @@
     $('closeEventDetailsModal').onclick = hideEventDetailsModal;
     $('closeEventDetails').onclick = hideEventDetailsModal;
     
+    // Override the event details close behavior when viewing from Personal
+    const originalCloseEventDetails = $('closeEventDetailsModal');
+    const originalCloseEventDetails2 = $('closeEventDetails');
+
+    if (originalCloseEventDetails) {
+      originalCloseEventDetails.onclick = () => {
+        if (state.viewingFromPersonal) {
+          // Just hide the event details modal, keep Personal modal open
+          hideEventDetailsModal();
+        } else {
+          // Normal behavior - hide event details modal
+          hideEventDetailsModal();
+        }
+      };
+    }
+
+    if (originalCloseEventDetails2) {
+      originalCloseEventDetails2.onclick = () => {
+        if (state.viewingFromPersonal) {
+          // Just hide the event details modal, keep Personal modal open
+          hideEventDetailsModal();
+        } else {
+          // Normal behavior - hide event details modal
+          hideEventDetailsModal();
+        }
+      };
+    }
+    
     // Calendar cell clicks - Updated to handle all view types
     document.addEventListener('click', (e) => {
       // Handle event clicks for all view types
@@ -161,6 +191,19 @@
     $('calendarPrevMonth').onclick = () => navigateCalendarPicker('prev-month');
     $('calendarNextMonth').onclick = () => navigateCalendarPicker('next-month');
     $('calendarNextYear').onclick = () => navigateCalendarPicker('next-year');
+
+    // Personal calendar click handler
+    const personalCalendar = document.querySelector('[data-calendar="personal"]');
+    if (personalCalendar) {
+      personalCalendar.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showPersonalEventsModal();
+      });
+    }
+
+    // Personal Events Modal
+    $('closePersonalEventsModal').onclick = hidePersonalEventsModal;
   }
 
   // Auth functions
@@ -1070,6 +1113,12 @@
 
   function hideEventDetailsModal() {
     $('eventDetailsModal').classList.remove('show');
+    
+    // If we're viewing from Personal modal, return to Personal events list
+    if (state.viewingFromPersonal) {
+      // The Personal modal should still be open, so we just return to it
+      // No need to do anything special as the Personal modal remains open
+    }
   }
 
   function formatDateTime(dateString) {
@@ -1266,6 +1315,185 @@
       state.selectedDate.setFullYear(state.selectedDate.getFullYear() + 1);
     }
     renderCalendarPicker();
+  }
+
+  // Personal Events Modal Functions
+  function showPersonalEventsModal() {
+    if (!state.token) {
+      showAuthModal('login');
+      return;
+    }
+    
+    const modal = $('personalEventsModal');
+    modal.classList.add('show');
+    modal.style.display = 'flex';
+    
+    // Clear search input when opening modal
+    const searchInput = $('personalEventsSearch');
+    if (searchInput) {
+      searchInput.value = '';
+    }
+    
+    // Set flag to track that we're viewing from Personal modal
+    state.viewingFromPersonal = true;
+    
+    loadPersonalEvents();
+  }
+
+  function hidePersonalEventsModal() {
+    const modal = $('personalEventsModal');
+    modal.classList.remove('show');
+    modal.style.display = 'none';
+    
+    // Clear the flag when closing Personal modal
+    state.viewingFromPersonal = false;
+  }
+
+  async function loadPersonalEvents() {
+    if (!state.token) return;
+    
+    try {
+      // Get events for a wider range (past 6 months to future 6 months)
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth() - 6, 1);
+      const end = new Date(now.getFullYear(), now.getMonth() + 6, 0);
+      
+      const res = await api(`/api/agenda?start=${start.toISOString()}&end=${end.toISOString()}`);
+      const personalEvents = (res || []).filter(e => !e.group_id);
+      
+      // Store all events for filtering
+      state.personalEvents = personalEvents;
+      
+      renderPersonalEventsList(personalEvents);
+      setupPersonalEventsFilters();
+    } catch (error) {
+      console.error('Failed to load personal events:', error);
+      state.personalEvents = [];
+      renderPersonalEventsList([]);
+    }
+  }
+
+  function renderPersonalEventsList(events) {
+    const container = $('personalEventsList');
+    container.innerHTML = '';
+    
+    if (events.length === 0) {
+      container.innerHTML = `
+        <div class="no-events">
+          <div class="no-events-icon">��</div>
+          <h3>No Personal Events</h3>
+          <p>You don't have any personal events yet.<br>Create your first event to get started!</p>
+        </div>
+      `;
+      return;
+    }
+    
+    // Sort events by date (newest first)
+    const sortedEvents = events.sort((a, b) => new Date(b.start) - new Date(a.start));
+    
+    sortedEvents.forEach(event => {
+      const eventEl = document.createElement('div');
+      eventEl.className = 'event-list-item';
+      
+      const now = new Date();
+      const eventDate = new Date(event.start);
+      const isPast = eventDate < now;
+      
+      if (isPast) {
+        eventEl.classList.add('past');
+      }
+      
+      const startTime = formatDateTime(event.start);
+      const endTime = formatDateTime(event.end);
+      
+      // Get search term for highlighting
+      const searchTerm = ($('personalEventsSearch')?.value || '').toLowerCase();
+      
+      // Highlight search term in title and description
+      const highlightedTitle = highlightSearchTerm(event.title, searchTerm);
+      const highlightedDescription = highlightSearchTerm(event.description || 'No description', searchTerm);
+      
+      eventEl.innerHTML = `
+        <div class="event-color" style="background: #1a73e8;"></div>
+        <div class="event-content">
+          <div class="event-title">${highlightedTitle}</div>
+          <div class="event-description">${highlightedDescription}</div>
+          <div class="event-time">${startTime} - ${endTime}</div>
+        </div>
+        <div class="event-status ${event.status}">${event.status}</div>
+      `;
+      
+      eventEl.addEventListener('click', () => {
+        // Don't hide Personal modal, just show event details
+        showEventDetailsModal(event.id);
+      });
+      
+      container.appendChild(eventEl);
+    });
+  }
+
+  function highlightSearchTerm(text, searchTerm) {
+    if (!searchTerm || !text) return text;
+    
+    const regex = new RegExp(`(${searchTerm})`, 'gi');
+    return text.replace(regex, '<span class="search-highlight">$1</span>');
+  }
+
+  function setupPersonalEventsFilters() {
+    const searchInput = $('personalEventsSearch');
+    const filterSelect = $('personalEventsFilter');
+    const sortSelect = $('personalEventsSort');
+    
+    if (!searchInput || !filterSelect || !sortSelect) return;
+    
+    // Search input with debouncing
+    let searchTimeout;
+    searchInput.oninput = () => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => {
+        applyPersonalEventsFilter();
+      }, 300);
+    };
+    
+    // Filter and sort change handlers
+    filterSelect.onchange = applyPersonalEventsFilter;
+    sortSelect.onchange = applyPersonalEventsFilter;
+  }
+
+  function applyPersonalEventsFilter() {
+    if (!state.personalEvents) return;
+    
+    const searchTerm = ($('personalEventsSearch')?.value || '').toLowerCase();
+    const filter = $('personalEventsFilter')?.value || 'all';
+    const sort = $('personalEventsSort')?.value || 'date';
+    
+    let filteredEvents = [...state.personalEvents];
+    
+    // Apply search filter
+    if (searchTerm) {
+      filteredEvents = filteredEvents.filter(event => 
+        event.title.toLowerCase().includes(searchTerm) ||
+        (event.description && event.description.toLowerCase().includes(searchTerm))
+      );
+    }
+    
+    // Apply date filter
+    if (filter === 'upcoming') {
+      const now = new Date();
+      filteredEvents = filteredEvents.filter(e => new Date(e.start) >= now);
+    } else if (filter === 'past') {
+      const now = new Date();
+      filteredEvents = filteredEvents.filter(e => new Date(e.start) < now);
+    }
+    
+    // Apply sort
+    if (sort === 'title') {
+      filteredEvents.sort((a, b) => a.title.localeCompare(b.title));
+    } else {
+      filteredEvents.sort((a, b) => new Date(b.start) - new Date(a.start));
+    }
+    
+    renderPersonalEventsList(filteredEvents);
   }
 
   // Initialize the app
