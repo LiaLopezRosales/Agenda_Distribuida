@@ -3,6 +3,7 @@
     token: null, 
     ws: null, 
     notifications: [],
+    currentView: 'month', // Add this line
     currentDate: new Date(),
     events: [],
     groups: [],
@@ -59,9 +60,15 @@
     $('nextMonth').onclick = () => changeMonth(1);
     $('todayBtn').onclick = goToToday;
     
-    // View switcher
+    // View switcher - Replace the existing view switcher code
     $$('.view-btn').forEach(btn => {
-      btn.onclick = () => switchView(btn.dataset.view);
+      console.log('Setting up listener for button:', btn.dataset.view);
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Button clicked:', this.dataset.view);
+        switchView(this.dataset.view);
+      });
     });
     
     // Event creation
@@ -279,8 +286,46 @@
 
   // Calendar functions
   function renderCalendar() {
+    console.log('=== RENDERING CALENDAR ===');
+    console.log('Current view:', state.currentView);
+    
     const calendarGrid = $('calendarGrid');
+    if (!calendarGrid) {
+      console.error('Calendar grid element not found!');
+      return;
+    }
+    
+    console.log('Found calendar grid:', calendarGrid);
+    
+    // Clear the grid
     calendarGrid.innerHTML = '';
+    console.log('Grid cleared');
+    
+    // Set the appropriate class
+    calendarGrid.className = `calendar-grid ${state.currentView}-view`;
+    console.log('Grid class set to:', calendarGrid.className);
+    
+    // Render based on view
+    if (state.currentView === 'month') {
+      console.log('Calling renderMonthView');
+      renderMonthView(calendarGrid);
+    } else if (state.currentView === 'week') {
+      console.log('Calling renderWeekView');
+      renderWeekView(calendarGrid);
+    } else if (state.currentView === 'day') {
+      console.log('Calling renderDayView');
+      renderDayView(calendarGrid);
+    } else {
+      console.error('Unknown view:', state.currentView);
+    }
+    
+    // Update current date display
+    updateCurrentDateDisplay();
+    console.log('=== RENDERING COMPLETE ===');
+  }
+
+  function renderMonthView(calendarGrid) {
+    calendarGrid.className = 'calendar-grid month-view';
     
     // Day headers
     const dayHeaders = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -327,18 +372,239 @@
         eventEl.className = `event ${event.group_id ? 'group-event' : ''} ${event.status}`;
         eventEl.textContent = event.title;
         eventEl.title = `${event.title}\n${formatTime(event.start)} - ${formatTime(event.end)}`;
-        eventEl.dataset.appointmentId = event.id; // Add this line
+        eventEl.dataset.appointmentId = event.id;
         cell.appendChild(eventEl);
       });
       
       calendarGrid.appendChild(cell);
     }
+  }
+
+  function renderWeekView(calendarGrid) {
+    calendarGrid.className = 'calendar-grid week-view';
     
-    // Update current date display
-    $('currentDate').textContent = state.currentDate.toLocaleDateString('en-US', { 
+    // Add time column header
+    const timeHeader = document.createElement('div');
+    timeHeader.className = 'time-column';
+    timeHeader.textContent = '';
+    calendarGrid.appendChild(timeHeader);
+    
+    // Get the start of the week (Sunday)
+    const startOfWeek = new Date(state.currentDate);
+    startOfWeek.setDate(state.currentDate.getDate() - state.currentDate.getDay());
+    
+    // Add day headers
+    for (let i = 0; i < 7; i++) {
+      const dayDate = new Date(startOfWeek);
+      dayDate.setDate(startOfWeek.getDate() + i);
+      
+      const dayHeader = document.createElement('div');
+      dayHeader.className = 'week-day-header';
+      if (isToday(dayDate)) {
+        dayHeader.classList.add('today');
+      }
+      
+      const dayName = document.createElement('div');
+      dayName.className = 'week-day-name';
+      dayName.textContent = dayDate.toLocaleDateString('en-US', { weekday: 'short' });
+      
+      const dayNumber = document.createElement('div');
+      dayNumber.className = 'week-day-number';
+      dayNumber.textContent = dayDate.getDate();
+      
+      dayHeader.appendChild(dayName);
+      dayHeader.appendChild(dayNumber);
+      dayHeader.dataset.date = dayDate.toISOString().split('T')[0];
+      calendarGrid.appendChild(dayHeader);
+    }
+    
+    // Add time slots (24 hours)
+    for (let hour = 0; hour < 24; hour++) {
+      // Time label
+      const timeSlot = document.createElement('div');
+      timeSlot.className = 'time-column';
+      timeSlot.textContent = formatHour(hour);
+      calendarGrid.appendChild(timeSlot);
+      
+      // Day slots for this hour
+      for (let day = 0; day < 7; day++) {
+        const dayDate = new Date(startOfWeek);
+        dayDate.setDate(startOfWeek.getDate() + day);
+        dayDate.setHours(hour, 0, 0, 0);
+        
+        const slot = document.createElement('div');
+        slot.className = 'week-time-slot';
+        slot.dataset.date = dayDate.toISOString();
+        
+        // Highlight current hour
+        const now = new Date();
+        if (now.getDate() === dayDate.getDate() && 
+            now.getMonth() === dayDate.getMonth() && 
+            now.getFullYear() === dayDate.getFullYear() && 
+            now.getHours() === hour) {
+          slot.classList.add('current-hour');
+        }
+        
+        // Add events for this time slot
+        const slotEvents = getEventsForTimeSlot(dayDate, hour);
+        slotEvents.forEach(event => {
+          const eventEl = document.createElement('div');
+          eventEl.className = `week-event ${event.group_id ? 'group-event' : ''} ${event.status}`;
+          eventEl.textContent = event.title;
+          eventEl.title = `${event.title}\n${formatTime(event.start)} - ${formatTime(event.end)}`;
+          eventEl.dataset.appointmentId = event.id;
+          
+          // Calculate position and height based on event duration
+          const startTime = new Date(event.start);
+          const endTime = new Date(event.end);
+          const startMinutes = startTime.getHours() * 60 + startTime.getMinutes();
+          const endMinutes = endTime.getHours() * 60 + endTime.getMinutes();
+          const duration = endMinutes - startMinutes;
+          
+          const topOffset = (startMinutes % 60) / 60 * 100;
+          const height = Math.max((duration / 60) * 100, 20);
+          
+          eventEl.style.top = `${topOffset}%`;
+          eventEl.style.height = `${height}%`;
+          eventEl.style.position = 'absolute';
+          
+          slot.appendChild(eventEl);
+        });
+        
+        calendarGrid.appendChild(slot);
+      }
+    }
+  }
+
+  function renderDayView(calendarGrid) {
+    calendarGrid.className = 'calendar-grid day-view';
+    
+    // Add time column header
+    const timeHeader = document.createElement('div');
+    timeHeader.className = 'time-column';
+    timeHeader.textContent = '';
+    calendarGrid.appendChild(timeHeader);
+    
+    // Add day header
+    const dayHeader = document.createElement('div');
+    dayHeader.className = 'day-header';
+    
+    const dayName = document.createElement('div');
+    dayName.className = 'day-name';
+    dayName.textContent = state.currentDate.toLocaleDateString('en-US', { 
+      weekday: 'long',
       month: 'long', 
-      year: 'numeric' 
+      day: 'numeric',
+      year: 'numeric'
     });
+    
+    dayHeader.appendChild(dayName);
+    dayHeader.dataset.date = state.currentDate.toISOString().split('T')[0];
+    calendarGrid.appendChild(dayHeader);
+    
+    // Add time slots (24 hours)
+    for (let hour = 0; hour < 24; hour++) {
+      // Time label
+      const timeSlot = document.createElement('div');
+      timeSlot.className = 'time-column';
+      timeSlot.textContent = formatHour(hour);
+      calendarGrid.appendChild(timeSlot);
+      
+      // Day slot for this hour
+      const dayDate = new Date(state.currentDate);
+      dayDate.setHours(hour, 0, 0, 0);
+      
+      const slot = document.createElement('div');
+      slot.className = 'day-time-slot';
+      slot.dataset.date = dayDate.toISOString();
+      
+      // Highlight current hour
+      const now = new Date();
+      if (now.getDate() === dayDate.getDate() && 
+          now.getMonth() === dayDate.getMonth() && 
+          now.getFullYear() === dayDate.getFullYear() && 
+          now.getHours() === hour) {
+        slot.classList.add('current-hour');
+      }
+      
+      // Add events for this time slot
+      const slotEvents = getEventsForTimeSlot(dayDate, hour);
+      slotEvents.forEach(event => {
+        const eventEl = document.createElement('div');
+        eventEl.className = `day-event ${event.group_id ? 'group-event' : ''} ${event.status}`;
+        eventEl.textContent = event.title;
+        eventEl.title = `${event.title}\n${formatTime(event.start)} - ${formatTime(event.end)}`;
+        eventEl.dataset.appointmentId = event.id;
+        
+        // Calculate position and height based on event duration
+        const startTime = new Date(event.start);
+        const endTime = new Date(event.end);
+        const startMinutes = startTime.getHours() * 60 + startTime.getMinutes();
+        const endMinutes = endTime.getHours() * 60 + endTime.getMinutes();
+        const duration = endMinutes - startMinutes;
+        
+        const topOffset = (startMinutes % 60) / 60 * 100;
+        const height = Math.max((duration / 60) * 100, 20);
+        
+        eventEl.style.top = `${topOffset}%`;
+        eventEl.style.height = `${height}%`;
+        eventEl.style.position = 'absolute';
+        
+        slot.appendChild(eventEl);
+      });
+      
+      calendarGrid.appendChild(slot);
+    }
+  }
+
+  function getEventsForTimeSlot(date, hour) {
+    const startOfHour = new Date(date);
+    startOfHour.setHours(hour, 0, 0, 0);
+    const endOfHour = new Date(date);
+    endOfHour.setHours(hour + 1, 0, 0, 0);
+    
+    return state.events.filter(event => {
+      const eventStart = new Date(event.start);
+      const eventEnd = new Date(event.end);
+      
+      // Check if event overlaps with this hour
+      return eventStart < endOfHour && eventEnd > startOfHour;
+    });
+  }
+
+  function formatHour(hour) {
+    if (hour === 0) return '12 AM';
+    if (hour < 12) return `${hour} AM`;
+    if (hour === 12) return '12 PM';
+    return `${hour - 12} PM`;
+  }
+
+  function updateCurrentDateDisplay() {
+    const currentDateEl = $('currentDate');
+    
+    if (state.currentView === 'month') {
+      currentDateEl.textContent = state.currentDate.toLocaleDateString('en-US', { 
+        month: 'long', 
+        year: 'numeric' 
+      });
+    } else if (state.currentView === 'week') {
+      const startOfWeek = new Date(state.currentDate);
+      startOfWeek.setDate(state.currentDate.getDate() - state.currentDate.getDay());
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      
+      const startStr = startOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const endStr = endOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      
+      currentDateEl.textContent = `${startStr} - ${endStr}`;
+    } else if (state.currentView === 'day') {
+      currentDateEl.textContent = state.currentDate.toLocaleDateString('en-US', { 
+        weekday: 'long',
+        month: 'long', 
+        day: 'numeric',
+        year: 'numeric'
+      });
+    }
   }
 
   function getEventsForDate(date) {
@@ -363,7 +629,13 @@
   }
 
   function changeMonth(direction) {
-    state.currentDate.setMonth(state.currentDate.getMonth() + direction);
+    if (state.currentView === 'month') {
+      state.currentDate.setMonth(state.currentDate.getMonth() + direction);
+    } else if (state.currentView === 'week') {
+      state.currentDate.setDate(state.currentDate.getDate() + (direction * 7));
+    } else if (state.currentView === 'day') {
+      state.currentDate.setDate(state.currentDate.getDate() + direction);
+    }
     renderCalendar();
     loadEvents();
   }
@@ -375,9 +647,33 @@
   }
 
   function switchView(view) {
-    $$('.view-btn').forEach(btn => btn.classList.remove('active'));
-    $(`[data-view="${view}"]`).classList.add('active');
-    // TODO: Implement different views in Phase 2
+    console.log('=== SWITCHING VIEW ===');
+    console.log('Requested view:', view);
+    console.log('Current state view:', state.currentView);
+    
+    // Update state
+    state.currentView = view;
+    console.log('State updated to:', state.currentView);
+    
+    // Update button states
+    $$('.view-btn').forEach(btn => {
+      btn.classList.remove('active');
+      console.log('Removed active from:', btn.dataset.view);
+    });
+    
+    const targetBtn = $(`[data-view="${view}"]`);
+    if (targetBtn) {
+      targetBtn.classList.add('active');
+      console.log('Added active to:', targetBtn.dataset.view);
+    } else {
+      console.error('Target button not found for view:', view);
+    }
+    
+    // Force re-render
+    console.log('About to call renderCalendar');
+    renderCalendar();
+    
+    console.log('=== VIEW SWITCH COMPLETE ===');
   }
 
   // Event management
