@@ -1,29 +1,38 @@
 (() => {
-  const state = { 
-    token: null, 
-    ws: null, 
+  const state = {
+    token: null,
+    ws: null,
     notifications: [],
-    currentView: 'month', // Add this line
+    currentView: 'month',
     currentDate: new Date(),
-    selectedDate: null, // Add this for calendar picker
+    selectedDate: null,
     events: [],
     groups: [],
     user: null,
-    personalEvents: [], // Add this line
-    viewingFromPersonal: false // Add this line
+    personalEvents: [],
+    viewingFromPersonal: false
   };
 
-  // API helper
   const api = (path, opts = {}) => {
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
     if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
-    return fetch(path, { ...opts, headers }).then(async (r) => {
-      const text = await r.text();
-      let body;
-      try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-      if (!r.ok) { throw new Error(typeof body === 'string' ? body : JSON.stringify(body)); }
-      return body;
-    });
+    // Log request
+    console.log('[API] Request:', path, opts);
+    return fetch(path, { ...opts, headers })
+      .then(async (r) => {
+        const text = await r.text();
+        let body;
+        try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+        // Log response
+        console.log('[API] Response:', path, 'Status:', r.status, 'Body:', body);
+        if (!r.ok) { throw new Error(typeof body === 'string' ? body : JSON.stringify(body)); }
+        return body;
+      })
+      .catch((err) => {
+        // Log network/fetch errors
+        console.error('[API] Fetch/network error:', path, err, err.stack);
+        throw err;
+      });
   };
 
   // DOM helpers
@@ -42,7 +51,7 @@
 
   // Event listeners
   function setupEventListeners() {
-    // Auth
+  // Auth
     $('loginBtn').onclick = () => showAuthModal('login');
     $('registerBtn').onclick = () => showAuthModal('register');
     $('logoutBtn').onclick = logout;
@@ -848,15 +857,20 @@
     
     $('eventModal').classList.add('show');
     
+    let startTime, endTime;
     if (date) {
-      const startTime = new Date(date);
+      startTime = new Date(date);
       startTime.setHours(9, 0, 0, 0);
-      const endTime = new Date(startTime);
+      endTime = new Date(startTime);
       endTime.setHours(10, 0, 0, 0);
-      
-      $('eventStart').value = formatDateTimeLocal(startTime);
-      $('eventEnd').value = formatDateTimeLocal(endTime);
+    } else {
+      startTime = new Date();
+      startTime.setMinutes(0, 0, 0); // round to the hour
+      endTime = new Date(startTime);
+      endTime.setHours(startTime.getHours() + 1);
     }
+    $('eventStart').value = formatDateTimeLocal(startTime);
+    $('eventEnd').value = formatDateTimeLocal(endTime);
   }
 
   function hideEventModal() {
@@ -875,23 +889,46 @@
 
   async function saveEvent() {
     try {
+      const startRaw = $('eventStart').value;
+      const endRaw = $('eventEnd').value;
+      // Log values before parsing
+      console.log('[saveEvent] Raw start:', startRaw, 'Raw end:', endRaw);
+
+      if (!startRaw || !endRaw) {
+        alert('Debes completar las fechas de inicio y fin.');
+        return;
+      }
+
+      const startDate = new Date(startRaw);
+      const endDate = new Date(endRaw);
+
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        alert('Formato de fecha inválido.');
+        return;
+      }
+
       const formData = {
         title: $('eventTitle').value,
         description: $('eventDescription').value,
-        start: new Date($('eventStart').value).toISOString(),
-        end: new Date($('eventEnd').value).toISOString(),
+        start: startDate.toISOString(),
+        end: endDate.toISOString(),
         privacy: $('eventPrivacy').value,
         group_id: $('eventGroup').value ? Number($('eventGroup').value) : undefined
       };
-      
+      // Log form data antes de enviar
+      console.log('[saveEvent] Form data to send:', formData);
+      // Log endpoint y body
+      console.log('[saveEvent] POST /api/appointments', JSON.stringify(formData));
       const res = await api('/api/appointments', {
         method: 'POST',
         body: JSON.stringify(formData)
       });
-      
+      console.log('[saveEvent] Event created successfully:', res);
       hideEventModal();
       loadEvents();
     } catch (error) {
+      // Log error completo
+      console.error('[saveEvent] Error creating event:', error, error.stack);
       alert('Failed to create event: ' + error.message);
     }
   }
