@@ -3,7 +3,11 @@ package agendadistribuida
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -113,6 +117,18 @@ func (a *API) handleRegister() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		in.Username = strings.TrimSpace(in.Username)
+		in.Email = strings.TrimSpace(in.Email)
+		in.DisplayName = strings.TrimSpace(in.DisplayName)
+		in.Name = strings.TrimSpace(in.Name)
+		if in.Username == "" || in.Password == "" {
+			http.Error(w, "username and password are required", http.StatusBadRequest)
+			return
+		}
+		if _, err := mail.ParseAddress(in.Email); err != nil {
+			http.Error(w, "invalid email", http.StatusBadRequest)
+			return
+		}
 		hash, err := a.auth.HashPassword(in.Password)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -199,38 +215,125 @@ func (a *API) handleAddMember() http.HandlerFunc {
 		vars := mux.Vars(r)
 		groupID := parseID(vars["groupID"])
 		actorID, _ := GetUserIDFromContext(r.Context())
-		if err := a.groups.AddMember(actorID, groupID, in.UserID, in.Rank); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
+		// validate target user exists
+		if _, err := a.users.GetUserByID(in.UserID); err != nil {
+			http.Error(w, ErrInvalidInput.Error(), http.StatusBadRequest)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		// validate not already member
+		if _, err := a.groupsRepo.GetMemberRank(groupID, in.UserID); err == nil {
+			http.Error(w, ErrInvalidInput.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := a.groups.AddMember(actorID, groupID, in.UserID, in.Rank); err != nil {
+			if err == ErrUnauthorized {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		u, _ := a.users.GetUserByID(in.UserID)
+		resp := map[string]interface{}{
+			"status":   "member added",
+			"group_id": groupID,
+			"user_id":  in.UserID,
+			"rank":     in.Rank,
+			"added_by": actorID,
+			"user_username": func() string {
+				if u != nil {
+					return u.Username
+				}
+				return ""
+			}(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
 	}
 }
 
 func (a *API) handleCreateAppointment() http.HandlerFunc {
 	type req struct {
-		Title       string    `json:"title"`
-		Description string    `json:"description"`
-		Start       time.Time `json:"start"`
-		End         time.Time `json:"end"`
-		Privacy     Privacy   `json:"privacy"`
-		GroupID     *int64    `json:"group_id,omitempty"`
+		Title       string  `json:"title"`
+		Description string  `json:"description"`
+		Start       string  `json:"start"`
+		End         string  `json:"end"`
+		Privacy     Privacy `json:"privacy"`
+		GroupID     *int64  `json:"group_id,omitempty"`
+	}
+	// Acepta múltiples formatos de fecha/hora
+	toRFC3339 := func(v string, end bool) (time.Time, error) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return time.Time{}, fmt.Errorf("missing time")
+		}
+		formats := []string{
+			time.RFC3339, // "2006-01-02T15:04:05Z07:00"
+			"2006-01-02T15:04:05.000Z07:00",
+			"2006-01-02T15:04:05.000",
+			"2006-01-02T15:04:05Z07:00",
+			"2006-01-02T15:04:05",
+			"2006-01-02T15:04Z07:00",
+			"2006-01-02T15:04",
+			"2006-01-02",
+		}
+		var t time.Time
+		var err error
+		for _, layout := range formats {
+			t, err = time.Parse(layout, v)
+			if err == nil {
+				if layout == "2006-01-02" {
+					if end {
+						return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 0, 0, time.UTC), nil
+					}
+					return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC), nil
+				}
+				return t, nil
+			}
+		}
+		log.Printf("[toRFC3339] No se pudo parsear '%s': %v", v, err)
+		return time.Time{}, fmt.Errorf("invalid time format: %s", v)
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		log.Println("[handleCreateAppointment] === INICIO HANDLER ===")
+		bodyBytes, _ := io.ReadAll(r.Body)
+		log.Printf("[handleCreateAppointment] Raw body: %s", string(bodyBytes))
+		r.Body = io.NopCloser(strings.NewReader(string(bodyBytes))) // reset body for decoder
+
 		var in req
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			log.Printf("[handleCreateAppointment] Error decodificando JSON: %v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		log.Printf("[handleCreateAppointment] JSON recibido: %+v", in)
 		uid, _ := GetUserIDFromContext(r.Context())
+		start, err := toRFC3339(in.Start, false)
+		if err != nil {
+			log.Printf("[handleCreateAppointment] Fecha start inválida: '%s'", in.Start)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		end, err := toRFC3339(in.End, true)
+		if err != nil {
+			log.Printf("[handleCreateAppointment] Fecha end inválida: '%s'", in.End)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		privacy := in.Privacy
+		if privacy == "" {
+			privacy = PrivacyFull
+		}
 		appt := Appointment{
 			Title: in.Title, Description: in.Description,
-			OwnerID: uid, Start: in.Start, End: in.End,
-			Privacy: in.Privacy, GroupID: in.GroupID,
+			OwnerID: uid, Start: start, End: end,
+			Privacy: privacy, GroupID: in.GroupID,
 		}
+		log.Printf("[handleCreateAppointment] Cita a crear: %+v", appt)
 		if in.GroupID != nil {
 			created, parts, err := a.apps.CreateGroupAppointment(uid, appt)
 			if err != nil {
+				log.Printf("[handleCreateAppointment] Error creando cita de grupo: %v", err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -238,6 +341,7 @@ func (a *API) handleCreateAppointment() http.HandlerFunc {
 		} else {
 			created, err := a.apps.CreatePersonalAppointment(uid, appt)
 			if err != nil {
+				log.Printf("[handleCreateAppointment] Error creando cita personal: %v", err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
