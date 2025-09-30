@@ -60,13 +60,36 @@
     $('nextMonth').onclick = () => changeMonth(1);
     $('todayBtn').onclick = goToToday;
     
-    // View switcher - Replace the existing view switcher code
+    // View switcher - Enhanced with visual feedback
     $$('.view-btn').forEach(btn => {
       console.log('Setting up listener for button:', btn.dataset.view);
+      
+      // Add hover effects
+      btn.addEventListener('mouseenter', function() {
+        if (!this.classList.contains('active')) {
+          this.style.background = 'rgba(26, 115, 232, 0.08)';
+          this.style.color = '#1a73e8';
+        }
+      });
+      
+      btn.addEventListener('mouseleave', function() {
+        if (!this.classList.contains('active')) {
+          this.style.background = 'transparent';
+          this.style.color = '#5f6368';
+        }
+      });
+      
       btn.addEventListener('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         console.log('Button clicked:', this.dataset.view);
+        
+        // Add click animation
+        this.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+          this.style.transform = '';
+        }, 150);
+        
         switchView(this.dataset.view);
       });
     });
@@ -93,18 +116,32 @@
     $('closeEventDetailsModal').onclick = hideEventDetailsModal;
     $('closeEventDetails').onclick = hideEventDetailsModal;
     
-    // Calendar cell clicks
+    // Calendar cell clicks - Updated to handle all view types
     document.addEventListener('click', (e) => {
-      if (e.target.classList.contains('event')) {
+      // Handle event clicks for all view types
+      if (e.target.classList.contains('event') || 
+          e.target.classList.contains('week-event') || 
+          e.target.classList.contains('day-event')) {
         e.stopPropagation();
         const appointmentId = e.target.dataset.appointmentId;
+        console.log('Event clicked:', e.target.textContent, 'ID:', appointmentId);
         if (appointmentId) {
           showEventDetailsModal(appointmentId);
         }
         return;
       }
       
+      // Handle day cell clicks for month view
       if (e.target.classList.contains('day-cell')) {
+        const date = e.target.dataset.date;
+        if (date) {
+          showEventModal(new Date(date));
+        }
+      }
+      
+      // Handle time slot clicks for week and day views
+      if (e.target.classList.contains('week-time-slot') || 
+          e.target.classList.contains('day-time-slot')) {
         const date = e.target.dataset.date;
         if (date) {
           showEventModal(new Date(date));
@@ -655,18 +692,41 @@
     state.currentView = view;
     console.log('State updated to:', state.currentView);
     
-    // Update button states
+    // Remove active class from all buttons with animation
     $$('.view-btn').forEach(btn => {
       btn.classList.remove('active');
+      btn.style.transform = 'translateY(0)';
+      btn.style.boxShadow = 'none';
       console.log('Removed active from:', btn.dataset.view);
     });
     
+    // Add active class to target button with animation
     const targetBtn = $(`[data-view="${view}"]`);
     if (targetBtn) {
-      targetBtn.classList.add('active');
-      console.log('Added active to:', targetBtn.dataset.view);
+      // Small delay for smooth transition
+      setTimeout(() => {
+        targetBtn.classList.add('active');
+        targetBtn.style.transform = 'translateY(-1px)';
+        targetBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.15)';
+        console.log('Added active to:', targetBtn.dataset.view);
+      }, 50);
     } else {
       console.error('Target button not found for view:', view);
+    }
+    
+    // Update navigation buttons based on view
+    const prevBtn = $('prevMonth');
+    const nextBtn = $('nextMonth');
+    
+    if (view === 'week') {
+      prevBtn.textContent = '‹';
+      nextBtn.textContent = '›';
+    } else if (view === 'day') {
+      prevBtn.textContent = '‹';
+      nextBtn.textContent = '›';
+    } else {
+      prevBtn.textContent = '‹';
+      nextBtn.textContent = '›';
     }
     
     // Force re-render
@@ -940,6 +1000,8 @@
 
   // Event Details Modal
   async function showEventDetailsModal(appointmentId) {
+    console.log('Showing event details for ID:', appointmentId);
+    
     if (!state.token) {
       showAuthModal('login');
       return;
@@ -948,6 +1010,8 @@
     try {
       const response = await api(`/api/appointments/${appointmentId}`);
       const { appointment, participants } = response;
+      
+      console.log('Event details loaded:', appointment);
       
       // Populate appointment details
       $('detailTitle').textContent = appointment.title;
@@ -984,7 +1048,9 @@
       }
       
       $('eventDetailsModal').classList.add('show');
+      console.log('Event details modal shown');
     } catch (error) {
+      console.error('Failed to load event details:', error);
       alert('Failed to load event details: ' + error.message);
     }
   }
