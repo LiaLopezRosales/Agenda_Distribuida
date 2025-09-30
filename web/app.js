@@ -5,6 +5,7 @@
     notifications: [],
     currentView: 'month', // Add this line
     currentDate: new Date(),
+    selectedDate: null, // Add this for calendar picker
     events: [],
     groups: [],
     user: null
@@ -59,6 +60,9 @@
     $('prevMonth').onclick = () => changeMonth(-1);
     $('nextMonth').onclick = () => changeMonth(1);
     $('todayBtn').onclick = goToToday;
+    
+    // Make current date clickable
+    $('currentDate').onclick = showCalendarPicker;
     
     // View switcher - Enhanced with visual feedback
     $$('.view-btn').forEach(btn => {
@@ -148,6 +152,15 @@
         }
       }
     });
+
+    // Calendar picker event listeners
+    $('closeCalendarPicker').onclick = hideCalendarPicker;
+    $('calendarPickerToday').onclick = goToTodayInPicker;
+    $('calendarPickerSelect').onclick = applyCalendarSelection;
+    $('calendarPrevYear').onclick = () => navigateCalendarPicker('prev-year');
+    $('calendarPrevMonth').onclick = () => navigateCalendarPicker('prev-month');
+    $('calendarNextMonth').onclick = () => navigateCalendarPicker('next-month');
+    $('calendarNextYear').onclick = () => navigateCalendarPicker('next-year');
   }
 
   // Auth functions
@@ -1074,6 +1087,185 @@
 
   function capitalizeFirst(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  // Calendar Picker Functions
+  function showCalendarPicker() {
+    $('calendarPickerModal').classList.add('show');
+    state.selectedDate = new Date(state.currentDate);
+    
+    // Update modal title based on current view
+    const title = $('calendarPickerTitle');
+    if (state.currentView === 'week') {
+      title.textContent = 'Select Week';
+    } else if (state.currentView === 'day') {
+      title.textContent = 'Select Day';
+    } else {
+      title.textContent = 'Select Date';
+    }
+    
+    renderCalendarPicker();
+  }
+
+  function hideCalendarPicker() {
+    $('calendarPickerModal').classList.remove('show');
+  }
+
+  function renderCalendarPicker() {
+    const pickerGrid = $('calendarPickerGrid');
+    const monthYear = $('calendarMonthYear');
+    const date = state.selectedDate;
+    
+    // Update month/year display
+    monthYear.textContent = date.toLocaleDateString('en-US', { 
+      month: 'long', 
+      year: 'numeric' 
+    });
+    
+    // Clear existing content
+    pickerGrid.innerHTML = '';
+    
+    // Add day headers
+    const dayHeaders = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    dayHeaders.forEach(day => {
+      const dayHeader = document.createElement('div');
+      dayHeader.className = 'calendar-picker-day-header';
+      dayHeader.textContent = day;
+      pickerGrid.appendChild(dayHeader);
+    });
+    
+    // Get first day of month and number of days
+    const firstDay = new Date(date.getFullYear(), date.getMonth(), 1);
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    const startDate = new Date(firstDay);
+    startDate.setDate(startDate.getDate() - firstDay.getDay());
+    
+    // Generate 42 days (6 weeks)
+    for (let i = 0; i < 42; i++) {
+      const cellDate = new Date(startDate);
+      cellDate.setDate(startDate.getDate() + i);
+      
+      const dayCell = document.createElement('div');
+      dayCell.className = 'calendar-picker-day';
+      dayCell.textContent = cellDate.getDate();
+      dayCell.dataset.date = cellDate.toISOString().split('T')[0];
+      
+      // Add classes for styling
+      if (cellDate.getMonth() !== date.getMonth()) {
+        dayCell.classList.add('other-month');
+      }
+      
+      const today = new Date();
+      if (cellDate.toDateString() === today.toDateString()) {
+        dayCell.classList.add('today');
+      }
+      
+      // Add selection styling based on current view - HIGHLIGHT CURRENT VIEW
+      if (state.currentView === 'week') {
+        // Highlight the current week being viewed
+        if (isDateInCurrentWeek(cellDate, state.currentDate)) {
+          dayCell.classList.add('week-selected');
+        }
+      } else if (state.currentView === 'day') {
+        // Highlight the current day being viewed
+        if (cellDate.toDateString() === state.currentDate.toDateString()) {
+          dayCell.classList.add('day-selected');
+        }
+      } else {
+        // Month view - highlight the current date
+        if (cellDate.toDateString() === state.currentDate.toDateString()) {
+          dayCell.classList.add('selected');
+        }
+      }
+      
+      // Add click handler
+      dayCell.onclick = () => selectCalendarDate(cellDate);
+      
+      pickerGrid.appendChild(dayCell);
+    }
+  }
+
+  function isDateInCurrentWeek(date, currentDate) {
+    // Get the start of the week (Sunday) for the current date
+    const startOfWeek = new Date(currentDate);
+    startOfWeek.setDate(currentDate.getDate() - currentDate.getDay());
+    
+    // Get the end of the week (Saturday) for the current date
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    
+    return date >= startOfWeek && date <= endOfWeek;
+  }
+
+  function selectCalendarDate(date) {
+    // Remove previous selections
+    $$('.calendar-picker-day.selected, .calendar-picker-day.week-selected, .calendar-picker-day.day-selected').forEach(day => {
+      day.classList.remove('selected', 'week-selected', 'day-selected');
+    });
+    
+    // Add selection to clicked date based on current view
+    const dayElement = $(`.calendar-picker-day[data-date="${date.toISOString().split('T')[0]}"]`);
+    if (dayElement) {
+      if (state.currentView === 'week') {
+        // For week view, highlight the entire week of the selected date
+        const weekStart = new Date(date);
+        weekStart.setDate(date.getDate() - date.getDay());
+        
+        // Highlight all days in the selected week
+        for (let i = 0; i < 7; i++) {
+          const weekDay = new Date(weekStart);
+          weekDay.setDate(weekStart.getDate() + i);
+          const weekDayElement = $(`.calendar-picker-day[data-date="${weekDay.toISOString().split('T')[0]}"]`);
+          if (weekDayElement) {
+            weekDayElement.classList.add('week-selected');
+          }
+        }
+      } else if (state.currentView === 'day') {
+        dayElement.classList.add('day-selected');
+      } else {
+        dayElement.classList.add('selected');
+      }
+    }
+    
+    state.selectedDate = new Date(date);
+  }
+
+  function applyCalendarSelection() {
+    if (state.currentView === 'week') {
+      // For week view, set to the start of the selected week
+      const selectedDate = new Date(state.selectedDate);
+      selectedDate.setDate(selectedDate.getDate() - selectedDate.getDay());
+      state.currentDate = selectedDate;
+    } else if (state.currentView === 'day') {
+      // For day view, set to the selected day
+      state.currentDate = new Date(state.selectedDate);
+    } else {
+      // For month view, set to the selected date
+      state.currentDate = new Date(state.selectedDate);
+    }
+    
+    renderCalendar();
+    loadEvents();
+    hideCalendarPicker();
+  }
+
+  function goToTodayInPicker() {
+    const today = new Date();
+    state.selectedDate = new Date(today);
+    renderCalendarPicker();
+  }
+
+  function navigateCalendarPicker(direction) {
+    if (direction === 'prev-month') {
+      state.selectedDate.setMonth(state.selectedDate.getMonth() - 1);
+    } else if (direction === 'next-month') {
+      state.selectedDate.setMonth(state.selectedDate.getMonth() + 1);
+    } else if (direction === 'prev-year') {
+      state.selectedDate.setFullYear(state.selectedDate.getFullYear() - 1);
+    } else if (direction === 'next-year') {
+      state.selectedDate.setFullYear(state.selectedDate.getFullYear() + 1);
+    }
+    renderCalendarPicker();
   }
 
   // Initialize the app
