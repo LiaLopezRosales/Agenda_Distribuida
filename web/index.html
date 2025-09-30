@@ -646,6 +646,93 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
+
+    /* Event Details Modal */
+    .event-details-modal .modal-content {
+      max-width: 600px;
+    }
+
+    .event-detail-row {
+      display: flex;
+      margin-bottom: 16px;
+      padding: 12px 0;
+      border-bottom: 1px solid #f1f3f4;
+    }
+
+    .event-detail-row:last-child {
+      border-bottom: none;
+    }
+
+    .detail-label {
+      font-weight: 500;
+      color: #5f6368;
+      min-width: 120px;
+      margin-right: 16px;
+    }
+
+    .detail-value {
+      flex: 1;
+      color: #202124;
+    }
+
+    .participants-list {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .participant-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #f1f3f4;
+    }
+
+    .participant-item:last-child {
+      border-bottom: none;
+    }
+
+    .participant-info {
+      flex: 1;
+    }
+
+    .participant-name {
+      font-weight: 500;
+      color: #202124;
+    }
+
+    .participant-username {
+      font-size: 12px;
+      color: #5f6368;
+    }
+
+    .status-badge {
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    .status-accepted {
+      background: #e8f5e8;
+      color: #137333;
+    }
+
+    .status-pending {
+      background: #fef7e0;
+      color: #b06000;
+    }
+
+    .status-declined {
+      background: #fce8e6;
+      color: #d93025;
+    }
+
+    .status-auto {
+      background: #e3f2fd;
+      color: #1565c0;
+    }
   </style>
 </head>
 <body>
@@ -876,6 +963,55 @@
         </div>
         <button type="submit" class="btn btn-primary" style="width: 100%;">Register</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Event Details Modal -->
+  <div class="modal event-details-modal" id="eventDetailsModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="eventDetailsTitle">Event Details</h2>
+        <button class="close-btn" id="closeEventDetailsModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="eventDetailsContent">
+          <div class="event-detail-row">
+            <span class="detail-label">Title:</span>
+            <span class="detail-value" id="detailTitle">-</span>
+          </div>
+          <div class="event-detail-row">
+            <span class="detail-label">Description:</span>
+            <span class="detail-value" id="detailDescription">-</span>
+          </div>
+          <div class="event-detail-row">
+            <span class="detail-label">Start:</span>
+            <span class="detail-value" id="detailStart">-</span>
+          </div>
+          <div class="event-detail-row">
+            <span class="detail-label">End:</span>
+            <span class="detail-value" id="detailEnd">-</span>
+          </div>
+          <div class="event-detail-row">
+            <span class="detail-label">Privacy:</span>
+            <span class="detail-value" id="detailPrivacy">-</span>
+          </div>
+          <div class="event-detail-row">
+            <span class="detail-label">Status:</span>
+            <span class="detail-value" id="detailStatus">-</span>
+          </div>
+          <div class="event-detail-row" id="participantsSection" style="display: none;">
+            <span class="detail-label">Participants:</span>
+            <div class="detail-value">
+              <div class="participants-list" id="participantsList">
+                <!-- Participants will be populated here -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="closeEventDetails">Close</button>
+      </div>
     </div>
   </div>
 

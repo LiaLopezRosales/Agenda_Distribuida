@@ -551,3 +551,62 @@ func (s *Storage) AppendEvent(e *Event) error {
 	e.CreatedAt = now
 	return nil
 }
+
+// ====================
+// Appointment Details
+// ====================
+
+// GetAppointmentByID retrieves a specific appointment by ID
+func (s *Storage) GetAppointmentByID(appointmentID int64) (*Appointment, error) {
+	q := `
+SELECT a.id, a.title, a.description, a.owner_id, a.group_id,
+       a.start_ts, a.end_ts, a.privacy, a.status,
+       a.created_at, a.updated_at, a.version, a.origin_node, a.deleted
+FROM appointments a
+WHERE a.id = ? AND a.deleted = 0`
+
+	var a Appointment
+	var startTS, endTS int64
+	err := s.db.QueryRow(q, appointmentID).Scan(
+		&a.ID, &a.Title, &a.Description, &a.OwnerID, &a.GroupID,
+		&startTS, &endTS, &a.Privacy, &a.Status,
+		&a.CreatedAt, &a.UpdatedAt, &a.Version, &a.OriginNode, &a.Deleted)
+
+	if err != nil {
+		return nil, err
+	}
+
+	a.Start = time.Unix(startTS, 0)
+	a.End = time.Unix(endTS, 0)
+	return &a, nil
+}
+
+// GetAppointmentParticipants retrieves all participants for an appointment with user details
+func (s *Storage) GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error) {
+	q := `
+SELECT p.id, p.appointment_id, p.user_id, p.status, p.is_optional,
+       p.created_at, p.updated_at, u.username, u.display_name
+FROM participants p
+JOIN users u ON p.user_id = u.id
+WHERE p.appointment_id = ?
+ORDER BY p.created_at ASC`
+
+	rows, err := s.db.Query(q, appointmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var participants []ParticipantDetails
+	for rows.Next() {
+		var p ParticipantDetails
+		err := rows.Scan(
+			&p.ID, &p.AppointmentID, &p.UserID, &p.Status, &p.IsOptional,
+			&p.CreatedAt, &p.UpdatedAt, &p.Username, &p.DisplayName)
+		if err != nil {
+			return nil, err
+		}
+		participants = append(participants, p)
+	}
+	return participants, nil
+}

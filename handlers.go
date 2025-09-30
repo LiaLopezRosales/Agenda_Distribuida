@@ -365,6 +365,83 @@ func handleGetGroupAgenda(storage *Storage) http.HandlerFunc {
 	}
 }
 
+// handleGetAppointmentDetails retrieves detailed information about an appointment
+func handleGetAppointmentDetails(storage *Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, err := GetUserFromContext(r)
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			respondError(w, http.StatusBadRequest, "Invalid appointment ID")
+			return
+		}
+
+		// Get appointment details
+		appointment, err := storage.GetAppointmentByID(appointmentID)
+		if err != nil {
+			respondError(w, http.StatusNotFound, "Appointment not found")
+			return
+		}
+
+		// Check if user has permission to view this appointment
+		hasPermission := false
+
+		// Owner can always view
+		if appointment.OwnerID == user.ID {
+			hasPermission = true
+		}
+
+		// For group appointments, check if user is a member or has hierarchy access
+		if appointment.GroupID != nil {
+			// Check if user is a participant
+			participants, err := storage.GetAppointmentParticipants(appointmentID)
+			if err == nil {
+				for _, p := range participants {
+					if p.UserID == user.ID {
+						hasPermission = true
+						break
+					}
+				}
+			}
+
+			// Check if user has superior rank in the group
+			if !hasPermission {
+				superior, _ := storage.IsSuperior(*appointment.GroupID, user.ID, appointment.OwnerID)
+				if superior {
+					hasPermission = true
+				}
+			}
+		}
+
+		if !hasPermission {
+			respondError(w, http.StatusForbidden, "Access denied")
+			return
+		}
+
+		// Get participants
+		participants, err := storage.GetAppointmentParticipants(appointmentID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Error loading participants")
+			return
+		}
+
+		// Apply privacy filter
+		filteredAppointment := filterAppointmentForViewer(storage, *appointment, user, appointment.GroupID)
+
+		response := map[string]interface{}{
+			"appointment":  filteredAppointment,
+			"participants": participants,
+		}
+
+		respondJSON(w, http.StatusOK, response)
+	}
+}
+
 // ======================
 // Router Setup
 // ======================
@@ -394,6 +471,9 @@ func NewRouter(storage *Storage, wsManager *WSManager) *mux.Router {
 	// Agenda
 	api.HandleFunc("/agenda", handleGetUserAgenda(storage)).Methods("GET")
 	api.HandleFunc("/groups/{groupID}/agenda", handleGetGroupAgenda(storage)).Methods("GET")
+
+	// Appointment Details
+	api.HandleFunc("/appointments/{appointmentID}", handleGetAppointmentDetails(storage)).Methods("GET")
 
 	return r
 }

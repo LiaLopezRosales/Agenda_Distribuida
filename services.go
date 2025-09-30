@@ -219,6 +219,16 @@ func (s *appointmentService) CreateGroupAppointment(ownerID int64, a Appointment
 	return &a, participants, nil
 }
 
+// GetAppointmentByID retrieves a specific appointment by ID
+func (s *appointmentService) GetAppointmentByID(appointmentID int64) (*Appointment, error) {
+	return s.apps.GetAppointmentByID(appointmentID)
+}
+
+// GetAppointmentParticipants retrieves all participants for an appointment with user details
+func (s *appointmentService) GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error) {
+	return s.apps.GetAppointmentParticipants(appointmentID)
+}
+
 // agendaService applies privacy filtering based on viewer, owner, and hierarchy.
 type agendaService struct {
 	apps   AppointmentRepository

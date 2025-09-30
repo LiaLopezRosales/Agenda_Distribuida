@@ -29,6 +29,8 @@ type AppointmentRepository interface {
 	CreateGroupAppointment(a *Appointment) ([]Participant, error)
 	GetUserAgenda(userID int64, start, end time.Time) ([]Appointment, error)
 	GetGroupAgenda(groupID int64, start, end time.Time) ([]Appointment, error)
+	GetAppointmentByID(appointmentID int64) (*Appointment, error)
+	GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error)
 }
 
 type NotificationRepository interface {
@@ -67,6 +69,8 @@ type GroupService interface {
 type AppointmentService interface {
 	CreatePersonalAppointment(ownerID int64, a Appointment) (*Appointment, error)
 	CreateGroupAppointment(ownerID int64, a Appointment) (*Appointment, []Participant, error)
+	GetAppointmentByID(appointmentID int64) (*Appointment, error)
+	GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error)
 }
 
 type AgendaService interface {

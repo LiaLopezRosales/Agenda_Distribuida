@@ -82,8 +82,21 @@
   const saveGroupBtn = $('saveGroup');
   if (saveGroupBtn) saveGroupBtn.addEventListener('click', saveGroup);
     
+    // Event details
+    $('closeEventDetailsModal').onclick = hideEventDetailsModal;
+    $('closeEventDetails').onclick = hideEventDetailsModal;
+    
     // Calendar cell clicks
     document.addEventListener('click', (e) => {
+      if (e.target.classList.contains('event')) {
+        e.stopPropagation();
+        const appointmentId = e.target.dataset.appointmentId;
+        if (appointmentId) {
+          showEventDetailsModal(appointmentId);
+        }
+        return;
+      }
+      
       if (e.target.classList.contains('day-cell')) {
         const date = e.target.dataset.date;
         if (date) {
@@ -314,6 +327,7 @@
         eventEl.className = `event ${event.group_id ? 'group-event' : ''} ${event.status}`;
         eventEl.textContent = event.title;
         eventEl.title = `${event.title}\n${formatTime(event.start)} - ${formatTime(event.end)}`;
+        eventEl.dataset.appointmentId = event.id; // Add this line
         cell.appendChild(eventEl);
       });
       
@@ -626,6 +640,78 @@
     } catch (e) {
       alert('Failed to load group details: ' + e.message);
     }
+  }
+
+  // Event Details Modal
+  async function showEventDetailsModal(appointmentId) {
+    if (!state.token) {
+      showAuthModal('login');
+      return;
+    }
+    
+    try {
+      const response = await api(`/api/appointments/${appointmentId}`);
+      const { appointment, participants } = response;
+      
+      // Populate appointment details
+      $('detailTitle').textContent = appointment.title;
+      $('detailDescription').textContent = appointment.description || 'No description';
+      $('detailStart').textContent = formatDateTime(appointment.start);
+      $('detailEnd').textContent = formatDateTime(appointment.end);
+      $('detailPrivacy').textContent = appointment.privacy === 'full' ? 'Full details' : 'Free/Busy only';
+      $('detailStatus').textContent = capitalizeFirst(appointment.status);
+      
+      // Show participants section if there are participants
+      const participantsSection = $('participantsSection');
+      const participantsList = $('participantsList');
+      
+      if (participants && participants.length > 0) {
+        participantsSection.style.display = 'flex';
+        participantsList.innerHTML = '';
+        
+        participants.forEach(participant => {
+          const participantEl = document.createElement('div');
+          participantEl.className = 'participant-item';
+          
+          participantEl.innerHTML = `
+            <div class="participant-info">
+              <div class="participant-name">${participant.display_name}</div>
+              <div class="participant-username">@${participant.username}</div>
+            </div>
+            <span class="status-badge status-${participant.status}">${participant.status}</span>
+          `;
+          
+          participantsList.appendChild(participantEl);
+        });
+      } else {
+        participantsSection.style.display = 'none';
+      }
+      
+      $('eventDetailsModal').classList.add('show');
+    } catch (error) {
+      alert('Failed to load event details: ' + error.message);
+    }
+  }
+
+  function hideEventDetailsModal() {
+    $('eventDetailsModal').classList.remove('show');
+  }
+
+  function formatDateTime(dateString) {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+  }
+
+  function capitalizeFirst(str) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
   }
 
   // Initialize the app

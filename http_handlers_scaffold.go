@@ -91,6 +91,8 @@ func NewAPI(
 	protected.HandleFunc("/me", api.handleMe()).Methods("GET")
 	protected.HandleFunc("/groups", api.handleListMyGroups()).Methods("GET")
 	protected.HandleFunc("/groups/{groupID}", api.handleGetGroupDetail()).Methods("GET")
+	// Appointment Details
+	protected.HandleFunc("/appointments/{appointmentID}", api.handleGetAppointmentDetails()).Methods("GET")
 
 	return api
 }
@@ -360,4 +362,99 @@ func (a *API) handleGetGroupDetail() http.HandlerFunc {
 			"members": members,
 		})
 	}
+}
+
+// handleGetAppointmentDetails retrieves detailed information about an appointment
+func (a *API) handleGetAppointmentDetails() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := GetUserIDFromContext(r.Context())
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			http.Error(w, "Invalid appointment ID", http.StatusBadRequest)
+			return
+		}
+
+		// Get appointment details
+		appointment, err := a.apps.GetAppointmentByID(appointmentID)
+		if err != nil {
+			http.Error(w, "Appointment not found", http.StatusNotFound)
+			return
+		}
+
+		// Check if user has permission to view this appointment
+		hasPermission := false
+
+		// Owner can always view
+		if appointment.OwnerID == userID {
+			hasPermission = true
+		}
+
+		// For group appointments, check if user is a member or has hierarchy access
+		if appointment.GroupID != nil {
+			// Check if user is a participant
+			participants, err := a.apps.GetAppointmentParticipants(appointmentID)
+			if err == nil {
+				for _, p := range participants {
+					if p.UserID == userID {
+						hasPermission = true
+						break
+					}
+				}
+			}
+
+			// Check if user has superior rank in the group
+			if !hasPermission {
+				superior, _ := a.groupsRepo.IsSuperior(*appointment.GroupID, userID, appointment.OwnerID)
+				if superior {
+					hasPermission = true
+				}
+			}
+		}
+
+		if !hasPermission {
+			http.Error(w, "Access denied", http.StatusForbidden)
+			return
+		}
+
+		// Get participants
+		participants, err := a.apps.GetAppointmentParticipants(appointmentID)
+		if err != nil {
+			http.Error(w, "Error loading participants", http.StatusInternalServerError)
+			return
+		}
+
+		// Apply privacy filter
+		filteredAppointment := a.filterAppointmentForViewer(*appointment, userID, appointment.GroupID)
+
+		response := map[string]interface{}{
+			"appointment":  filteredAppointment,
+			"participants": participants,
+		}
+
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+// filterAppointmentForViewer applies privacy filtering based on viewer, owner, and hierarchy
+func (a *API) filterAppointmentForViewer(appointment Appointment, viewerID int64, groupID *int64) Appointment {
+	// Owner always sees everything
+	if appointment.OwnerID == viewerID {
+		return appointment
+	}
+
+	// If it's a group appointment, check hierarchy
+	if groupID != nil && appointment.GroupID != nil {
+		superior, _ := a.groupsRepo.IsSuperior(*appointment.GroupID, viewerID, appointment.OwnerID)
+		if superior {
+			return appointment // superiors see details
+		}
+	}
+
+	// If privacy is FreeBusy or the viewer doesn't have privileges -> hide details
+	if appointment.Privacy == PrivacyFreeBusy {
+		appointment.Title = "Busy"
+		appointment.Description = ""
+	}
+	return appointment
 }

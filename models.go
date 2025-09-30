@@ -97,3 +97,16 @@ type Event struct {
 	OriginNode string    `json:"origin_node" db:"origin_node"`
 	Version    int64     `json:"version" db:"version"`
 }
+
+// ParticipantDetails extends Participant with user information
+type ParticipantDetails struct {
+	ID            int64      `json:"id" db:"id"`
+	AppointmentID int64      `json:"appointment_id" db:"appointment_id"`
+	UserID        int64      `json:"user_id" db:"user_id"`
+	Status        ApptStatus `json:"status" db:"status"`
+	IsOptional    bool       `json:"is_optional" db:"is_optional"`
+	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at" db:"updated_at"`
+	Username      string     `json:"username" db:"username"`
+	DisplayName   string     `json:"display_name" db:"display_name"`
+}
