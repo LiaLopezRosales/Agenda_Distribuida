@@ -181,24 +181,32 @@ func (a *API) handleLogin() http.HandlerFunc {
 }
 
 func (a *API) handleCreateGroup() http.HandlerFunc {
-	type req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		var in req
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		uid, _ := GetUserIDFromContext(r.Context())
-		g, err := a.groups.CreateGroup(uid, in.Name, in.Description)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(g)
-	}
+    type req struct {
+        Name        string `json:"name"`
+        Description string `json:"description"`
+    }
+    return func(w http.ResponseWriter, r *http.Request) {
+        var in req
+        if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+            http.Error(w, err.Error(), http.StatusBadRequest)
+            return
+        }
+        uid, _ := GetUserIDFromContext(r.Context())
+        user, _ := a.users.GetUserByID(uid)
+        g := &Group{
+            Name:            in.Name,
+            Description:     in.Description,
+            CreatorID:       user.ID,
+            CreatorUserName: user.Username,
+        }
+        if err := a.groupsRepo.CreateGroup(g); err != nil {
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        // Añadir como miembro con mayor rango
+        _ = a.groupsRepo.AddGroupMember(g.ID, user.ID, 10, nil)
+        json.NewEncoder(w).Encode(g)
+    }
 }
 
 func (a *API) handleAddMember() http.HandlerFunc {

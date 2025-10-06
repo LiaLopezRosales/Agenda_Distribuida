@@ -113,7 +113,12 @@ func handleCreateGroup(storage *Storage) http.HandlerFunc {
 			return
 		}
 
-		group := &Group{Name: req.Name, Description: req.Description}
+		group := &Group{
+			Name:            req.Name,
+			Description:     req.Description,
+			CreatorID:       user.ID,
+			CreatorUserName: user.Username,
+		}
 		if err := storage.CreateGroup(group); err != nil {
 			respondError(w, http.StatusInternalServerError, "Could not create group")
 			return

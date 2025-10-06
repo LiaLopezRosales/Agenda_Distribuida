@@ -33,11 +33,13 @@ type User struct {
 }
 
 type Group struct {
-	ID          int64     `json:"id" db:"id"`
-	Name        string    `json:"name" db:"name"`
-	Description string    `json:"description,omitempty" db:"description"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	ID              int64     `json:"id" db:"id"`
+	Name            string    `json:"name" db:"name"`
+	Description     string    `json:"description,omitempty" db:"description"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
+	CreatorID       int64     `json:"creator_id" db:"creator_id"`
+	CreatorUserName string    `json:"creator_username,omitempty" db:"creator_username"`
 }
 
 // GroupMember con Rank para jerarquías dinámicas

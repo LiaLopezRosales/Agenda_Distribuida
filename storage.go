@@ -52,11 +52,13 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS groups (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	name TEXT NOT NULL,
-	description TEXT,
-	created_at DATETIME NOT NULL,
-	updated_at DATETIME NOT NULL
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    creator_id INTEGER,
+    creator_username TEXT
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
@@ -160,8 +162,8 @@ func (s *Storage) GetUserByID(id int64) (*User, error) {
 // ====================
 func (s *Storage) CreateGroup(g *Group) error {
 	now := time.Now()
-	res, err := s.db.Exec(`INSERT INTO groups(name, description, created_at, updated_at) VALUES(?,?,?,?)`,
-		g.Name, g.Description, now, now)
+	res, err := s.db.Exec(`INSERT INTO groups(name, description, created_at, updated_at, creator_id, creator_username) VALUES(?,?,?,?,?,?)`,
+		g.Name, g.Description, now, now, g.CreatorID, g.CreatorUserName)
 	if err != nil {
 		return err
 	}
@@ -218,9 +220,9 @@ func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
 
 // Fetch group by ID
 func (s *Storage) GetGroupByID(id int64) (*Group, error) {
-	row := s.db.QueryRow(`SELECT id,name,description,created_at,updated_at FROM groups WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id,name,description,created_at,updated_at,creator_id,creator_username FROM groups WHERE id=?`, id)
 	var g Group
-	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt); err != nil {
+	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName); err != nil {
 		return nil, err
 	}
 	return &g, nil
@@ -229,7 +231,7 @@ func (s *Storage) GetGroupByID(id int64) (*Group, error) {
 // List all groups the user belongs to
 func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	rows, err := s.db.Query(`
-		SELECT g.id, g.name, g.description, g.created_at, g.updated_at
+		SELECT g.id, g.name, g.description, g.created_at, g.updated_at, g.creator_id, g.creator_username
 		FROM groups g
 		JOIN group_members gm ON gm.group_id = g.id
 		WHERE gm.user_id = ?
@@ -242,7 +244,7 @@ func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	var groups []Group
 	for rows.Next() {
 		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
