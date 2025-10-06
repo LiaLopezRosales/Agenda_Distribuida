@@ -46,9 +46,10 @@ type Group struct {
 type GroupMember struct {
 	GroupID   int64     `json:"group_id" db:"group_id"`
 	UserID    int64     `json:"user_id" db:"user_id"`
-	Rank      int       `json:"rank" db:"rank"` // nivel jerárquico: 0 = básico, más alto = más autoridad
+	Rank      int       `json:"rank" db:"rank"`
 	AddedBy   *int64    `json:"added_by,omitempty" db:"added_by"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	Username  string    `json:"username,omitempty"` // <-- Añadido para respuesta
 }
 
 type Appointment struct {

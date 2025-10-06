@@ -210,54 +210,53 @@ func (a *API) handleCreateGroup() http.HandlerFunc {
 }
 
 func (a *API) handleAddMember() http.HandlerFunc {
-	type req struct {
-		UserID int64 `json:"user_id"`
-		Rank   int   `json:"rank"`
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		var in req
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		vars := mux.Vars(r)
-		groupID := parseID(vars["groupID"])
-		actorID, _ := GetUserIDFromContext(r.Context())
-		// validate target user exists
-		if _, err := a.users.GetUserByID(in.UserID); err != nil {
-			http.Error(w, ErrInvalidInput.Error(), http.StatusBadRequest)
-			return
-		}
-		// validate not already member
-		if _, err := a.groupsRepo.GetMemberRank(groupID, in.UserID); err == nil {
-			http.Error(w, ErrInvalidInput.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := a.groups.AddMember(actorID, groupID, in.UserID, in.Rank); err != nil {
-			if err == ErrUnauthorized {
-				http.Error(w, err.Error(), http.StatusForbidden)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		u, _ := a.users.GetUserByID(in.UserID)
-		resp := map[string]interface{}{
-			"status":   "member added",
-			"group_id": groupID,
-			"user_id":  in.UserID,
-			"rank":     in.Rank,
-			"added_by": actorID,
-			"user_username": func() string {
-				if u != nil {
-					return u.Username
-				}
-				return ""
-			}(),
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}
+    type req struct {
+        Username string `json:"username"` // Cambiado a username
+        Rank     int    `json:"rank"`
+    }
+    return func(w http.ResponseWriter, r *http.Request) {
+        var in req
+        if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+            http.Error(w, err.Error(), http.StatusBadRequest)
+            return
+        }
+        vars := mux.Vars(r)
+        groupID := parseID(vars["groupID"])
+        actorID, _ := GetUserIDFromContext(r.Context())
+
+        // Buscar el usuario por username
+        user, err := a.users.GetUserByUsername(in.Username)
+        if err != nil || user == nil {
+            http.Error(w, "User not found", http.StatusBadRequest)
+            return
+        }
+
+        // Validar que no sea ya miembro
+        if _, err := a.groupsRepo.GetMemberRank(groupID, user.ID); err == nil {
+            http.Error(w, "User is already a member", http.StatusBadRequest)
+            return
+        }
+
+        if err := a.groups.AddMember(actorID, groupID, user.ID, in.Rank); err != nil {
+            if err == ErrUnauthorized {
+                http.Error(w, err.Error(), http.StatusForbidden)
+                return
+            }
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        resp := map[string]interface{}{
+            "status":   "member added",
+            "group_id": groupID,
+            "user_id":  user.ID,
+            "username": user.Username,
+            "rank":     in.Rank,
+            "added_by": actorID,
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(resp)
+    }
 }
 
 func (a *API) handleCreateAppointment() http.HandlerFunc {

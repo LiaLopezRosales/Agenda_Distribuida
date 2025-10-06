@@ -1074,60 +1074,55 @@
       const res = await api(`/api/groups/${groupId}`);
       const { group, members } = res || {};
       if (!group) return;
-      
+
       $('groupDetailsTitle').textContent = group.name;
       $('groupDetailsDesc').textContent = group.description || '';
-      
+
       const list = $('groupMembersList');
       list.innerHTML = '';
-      
-      // Render members with user_id and rank
+
+      // Render members with user_id, username and rank
       for (const m of members) {
         const row = document.createElement('div');
         row.style.display = 'flex';
         row.style.justifyContent = 'space-between';
         row.style.padding = '6px 8px';
         row.style.borderBottom = '1px solid #eee';
-        row.innerHTML = `<span>User #${m.user_id}</span><span>Rank: ${m.rank}</span>`;
+        row.innerHTML = `<span>@${m.username || m.user_id}</span><span>Rank: ${m.rank}</span>`;
         list.appendChild(row);
       }
-      
+
       // Bind add member action
       const addBtn = $('addMemberBtn');
       addBtn.onclick = async () => {
         try {
-          const userId = Number(($('newMemberUserId').value || '').trim());
+          const username = ($('newMemberUsername').value || '').trim();
           const rank = Number(($('newMemberRank').value || '').trim());
-          if (!userId || Number.isNaN(userId)) { 
-            alert('Enter a valid user ID'); 
-            return; 
-          }
-          if (Number.isNaN(rank)) { 
-            alert('Enter a valid rank'); 
-            return; 
-          }
-          
-          await api(`/api/groups/${groupId}/members`, { 
-            method: 'POST', 
-            body: JSON.stringify({ user_id: userId, rank }) 
+
+          console.log('DEBUG username:', username, 'rank:', rank);
+          if (!username) { alert('Username is required'); return; }
+          if (Number.isNaN(rank)) { alert('Rank is required'); return; }
+
+          await api(`/api/groups/${groupId}/members`, {
+            method: 'POST',
+            body: JSON.stringify({ username, rank })
           });
-          
-          // Clear form
-          $('newMemberUserId').value = '';
+
+          $('newMemberUsername').value = '';
           $('newMemberRank').value = '';
-          
-          // Reload details
+
           await openGroupDetails(groupId);
         } catch (e) {
           alert('Failed to add member: ' + e.message);
         }
       };
-      
+
+
       // Show modal
       const modal = $('groupDetailsModal');
       modal.classList.add('show');
       modal.style.display = 'flex';
-      
+
       const closeBtn = $('closeGroupDetailsModal');
       closeBtn.onclick = () => { 
         modal.classList.remove('show'); 
