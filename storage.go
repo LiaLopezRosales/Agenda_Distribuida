@@ -202,20 +202,28 @@ func (s *Storage) IsSuperior(groupID, userA, userB int64) (bool, error) {
 }
 
 func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
-	rows, err := s.db.Query(`SELECT group_id,user_id,rank,added_by,created_at FROM group_members WHERE group_id=?`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var members []GroupMember
-	for rows.Next() {
-		var gm GroupMember
-		if err := rows.Scan(&gm.GroupID, &gm.UserID, &gm.Rank, &gm.AddedBy, &gm.CreatedAt); err != nil {
-			return nil, err
-		}
-		members = append(members, gm)
-	}
-	return members, nil
+    rows, err := s.db.Query(`
+        SELECT gm.group_id, gm.user_id, gm.rank, gm.added_by, gm.created_at, u.username
+        FROM group_members gm
+        LEFT JOIN users u ON gm.user_id = u.id
+        WHERE gm.group_id=?`, groupID)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    var members []GroupMember
+    for rows.Next() {
+        var gm GroupMember
+        var username sql.NullString
+        if err := rows.Scan(&gm.GroupID, &gm.UserID, &gm.Rank, &gm.AddedBy, &gm.CreatedAt, &username); err != nil {
+            return nil, err
+        }
+        if username.Valid {
+            gm.Username = username.String
+        }
+        members = append(members, gm)
+    }
+    return members, nil
 }
 
 // Fetch group by ID

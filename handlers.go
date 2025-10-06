@@ -152,8 +152,8 @@ func handleListMyGroups(storage *Storage) http.HandlerFunc {
 }
 
 type addMemberRequest struct {
-	UserID int64 `json:"user_id"`
-	Rank   int   `json:"rank"`
+	Username string `json:"username"` // Cambiado de user_id a username
+	Rank     int    `json:"rank"`
 }
 
 func handleAddGroupMember(storage *Storage) http.HandlerFunc {
@@ -167,12 +167,31 @@ func handleAddGroupMember(storage *Storage) http.HandlerFunc {
 			return
 		}
 
-		if err := storage.AddGroupMember(groupID, req.UserID, req.Rank, nil); err != nil {
+		// Buscar usuario por username
+		user, err := storage.GetUserByUsername(req.Username)
+		if err != nil || user == nil {
+			respondError(w, http.StatusBadRequest, "User not found")
+			return
+		}
+
+		// Validar que no sea ya miembro
+		if _, err := storage.GetMemberRank(groupID, user.ID); err == nil {
+			respondError(w, http.StatusBadRequest, "User is already a member")
+			return
+		}
+
+		if err := storage.AddGroupMember(groupID, user.ID, req.Rank, nil); err != nil {
 			respondError(w, http.StatusInternalServerError, "Could not add member")
 			return
 		}
 
-		respondJSON(w, http.StatusCreated, map[string]string{"status": "member added"})
+		respondJSON(w, http.StatusCreated, map[string]interface{}{
+			"status":   "member added",
+			"group_id": groupID,
+			"user_id":  user.ID,
+			"username": user.Username,
+			"rank":     req.Rank,
+		})
 	}
 }
 
