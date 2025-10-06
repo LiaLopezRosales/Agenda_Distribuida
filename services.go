@@ -70,12 +70,19 @@ func (s *groupService) CreateGroup(ownerID int64, name, description string) (*Gr
 		Description: description,
 		CreatedAt:   now,
 		UpdatedAt:   now,
+		CreatorID:   ownerID, // Nuevo campo
+	}
+	// Intentar obtener el nombre de usuario del creador
+	if userRepo, ok := s.groups.(interface{ GetUserByID(int64) (*User, error) }); ok {
+		if creator, err := userRepo.GetUserByID(ownerID); err == nil {
+			g.CreatorUserName = creator.Username
+		}
 	}
 	if err := s.groups.CreateGroup(g); err != nil {
 		return nil, err
 	}
-	// owner como rank más alto (ejemplo: 100)
-	if err := s.groups.AddGroupMember(g.ID, ownerID, 100, nil); err != nil {
+	// owner como rank más alto (ejemplo: 10)
+	if err := s.groups.AddGroupMember(g.ID, ownerID, 5, nil); err != nil {
 		return nil, err
 	}
 	// notificar dueño
