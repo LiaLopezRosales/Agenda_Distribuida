@@ -202,28 +202,28 @@ func (s *Storage) IsSuperior(groupID, userA, userB int64) (bool, error) {
 }
 
 func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
-    rows, err := s.db.Query(`
+	rows, err := s.db.Query(`
         SELECT gm.group_id, gm.user_id, gm.rank, gm.added_by, gm.created_at, u.username
         FROM group_members gm
         LEFT JOIN users u ON gm.user_id = u.id
         WHERE gm.group_id=?`, groupID)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var members []GroupMember
-    for rows.Next() {
-        var gm GroupMember
-        var username sql.NullString
-        if err := rows.Scan(&gm.GroupID, &gm.UserID, &gm.Rank, &gm.AddedBy, &gm.CreatedAt, &username); err != nil {
-            return nil, err
-        }
-        if username.Valid {
-            gm.Username = username.String
-        }
-        members = append(members, gm)
-    }
-    return members, nil
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []GroupMember
+	for rows.Next() {
+		var gm GroupMember
+		var username sql.NullString
+		if err := rows.Scan(&gm.GroupID, &gm.UserID, &gm.Rank, &gm.AddedBy, &gm.CreatedAt, &username); err != nil {
+			return nil, err
+		}
+		if username.Valid {
+			gm.Username = username.String
+		}
+		members = append(members, gm)
+	}
+	return members, nil
 }
 
 // Fetch group by ID
@@ -280,6 +280,28 @@ func (s *Storage) CreateAppointment(a *Appointment) error {
 	return nil
 }
 
+func (s *Storage) UpdateAppointment(a *Appointment) error {
+	now := time.Now()
+	_, err := s.db.Exec(`UPDATE appointments 
+		SET title=?, description=?, start_ts=?, end_ts=?, privacy=?, updated_at=?, version=version+1
+		WHERE id=? AND deleted=0`,
+		a.Title, a.Description, a.Start.Unix(), a.End.Unix(), a.Privacy, now, a.ID)
+	if err != nil {
+		return err
+	}
+	a.UpdatedAt = now
+	return nil
+}
+
+func (s *Storage) DeleteAppointment(appointmentID int64) error {
+	now := time.Now()
+	_, err := s.db.Exec(`UPDATE appointments 
+		SET deleted=1, updated_at=?, version=version+1
+		WHERE id=?`,
+		now, appointmentID)
+	return err
+}
+
 func (s *Storage) AddParticipant(p *Participant) error {
 	now := time.Now()
 	res, err := s.db.Exec(`INSERT INTO participants(appointment_id,user_id,status,is_optional,created_at,updated_at)
@@ -306,6 +328,24 @@ WHERE p.user_id = ?
   AND NOT (a.end_ts <= ? OR a.start_ts >= ?)`
 	var cnt int
 	row := s.db.QueryRow(q, userID, start.Unix(), end.Unix())
+	if err := row.Scan(&cnt); err != nil {
+		return false, err
+	}
+	return cnt > 0, nil
+}
+
+func (s *Storage) HasConflictExcluding(userID int64, start, end time.Time, excludeAppointmentID int64) (bool, error) {
+	q := `
+SELECT COUNT(1)
+FROM appointments a
+JOIN participants p ON p.appointment_id = a.id
+WHERE p.user_id = ?
+  AND a.deleted = 0
+  AND a.id != ?
+  AND p.status IN ('accepted','auto')
+  AND NOT (a.end_ts <= ? OR a.start_ts >= ?)`
+	var cnt int
+	row := s.db.QueryRow(q, userID, excludeAppointmentID, start.Unix(), end.Unix())
 	if err := row.Scan(&cnt); err != nil {
 		return false, err
 	}

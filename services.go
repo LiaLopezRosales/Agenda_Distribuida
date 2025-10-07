@@ -236,6 +236,79 @@ func (s *appointmentService) GetAppointmentParticipants(appointmentID int64) ([]
 	return s.apps.GetAppointmentParticipants(appointmentID)
 }
 
+// UpdateAppointment updates an existing appointment
+func (s *appointmentService) UpdateAppointment(ownerID int64, a Appointment) (*Appointment, error) {
+	// First, get the existing appointment to verify ownership
+	existing, err := s.apps.GetAppointmentByID(a.ID)
+	if err != nil {
+		return nil, err
+	}
+	if existing.OwnerID != ownerID {
+		return nil, fmt.Errorf("unauthorized: only appointment owner can update")
+	}
+
+	// Validate the update
+	if a.Start.After(a.End) {
+		return nil, ErrInvalidInput
+	}
+
+	// Check for conflicts (excluding the current appointment)
+	conflict, err := s.apps.HasConflictExcluding(ownerID, a.Start, a.End, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	if conflict {
+		return nil, fmt.Errorf("time conflict with existing appointment")
+	}
+
+	// Update the appointment
+	a.OwnerID = ownerID // Ensure ownership is preserved
+	if err := s.apps.UpdateAppointment(&a); err != nil {
+		return nil, err
+	}
+
+	// Emit event for replication
+	evt := Event{
+		Entity:   "appointment",
+		EntityID: a.ID,
+		Action:   "update",
+		Payload:  fmt.Sprintf(`{"appointment_id": %d}`, a.ID),
+		Version:  a.Version,
+	}
+	_ = s.events.Publish(evt)
+
+	return &a, nil
+}
+
+// DeleteAppointment deletes an appointment
+func (s *appointmentService) DeleteAppointment(ownerID int64, appointmentID int64) error {
+	// First, get the existing appointment to verify ownership
+	existing, err := s.apps.GetAppointmentByID(appointmentID)
+	if err != nil {
+		return err
+	}
+	if existing.OwnerID != ownerID {
+		return fmt.Errorf("unauthorized: only appointment owner can delete")
+	}
+
+	// Delete the appointment (soft delete)
+	if err := s.apps.DeleteAppointment(appointmentID); err != nil {
+		return err
+	}
+
+	// Emit event for replication
+	evt := Event{
+		Entity:   "appointment",
+		EntityID: appointmentID,
+		Action:   "delete",
+		Payload:  fmt.Sprintf(`{"appointment_id": %d}`, appointmentID),
+		Version:  existing.Version + 1,
+	}
+	_ = s.events.Publish(evt)
+
+	return nil
+}
+
 // agendaService applies privacy filtering based on viewer, owner, and hierarchy.
 type agendaService struct {
 	apps   AppointmentRepository

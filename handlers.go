@@ -167,6 +167,16 @@ func handleAddGroupMember(storage *Storage) http.HandlerFunc {
 			return
 		}
 
+		// Validate input
+		if req.Username == "" {
+			respondError(w, http.StatusBadRequest, "Username is required")
+			return
+		}
+		if req.Rank <= 0 {
+			respondError(w, http.StatusBadRequest, "Rank must be a positive number")
+			return
+		}
+
 		// Buscar usuario por username
 		user, err := storage.GetUserByUsername(req.Username)
 		if err != nil || user == nil {
@@ -467,6 +477,98 @@ func handleGetAppointmentDetails(storage *Storage) http.HandlerFunc {
 }
 
 // ======================
+// Update and Delete Appointment Handlers
+// ======================
+
+func handleUpdateAppointment(storage *Storage, wsManager *WSManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, err := GetUserFromContext(r)
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			respondError(w, http.StatusBadRequest, "Invalid appointment ID")
+			return
+		}
+
+		var req createAppointmentRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid request")
+			return
+		}
+
+		appt := &Appointment{
+			ID:          appointmentID,
+			Title:       req.Title,
+			Description: req.Description,
+			OwnerID:     user.ID,
+			GroupID:     req.GroupID,
+			Start:       req.Start,
+			End:         req.End,
+			Privacy:     req.Privacy,
+		}
+
+		if err := storage.UpdateAppointment(appt); err != nil {
+			respondError(w, http.StatusInternalServerError, "Could not update appointment")
+			return
+		}
+
+		// Send WebSocket notification
+		wsManager.BroadcastToUser(user.ID, map[string]interface{}{
+			"type":           "appointment_updated",
+			"appointment_id": appt.ID,
+		})
+
+		respondJSON(w, http.StatusOK, appt)
+	}
+}
+
+func handleDeleteAppointment(storage *Storage, wsManager *WSManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, err := GetUserFromContext(r)
+		if err != nil {
+			respondError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			respondError(w, http.StatusBadRequest, "Invalid appointment ID")
+			return
+		}
+
+		// Verify ownership before deletion
+		existing, err := storage.GetAppointmentByID(appointmentID)
+		if err != nil {
+			respondError(w, http.StatusNotFound, "Appointment not found")
+			return
+		}
+		if existing.OwnerID != user.ID {
+			respondError(w, http.StatusForbidden, "Only appointment owner can delete")
+			return
+		}
+
+		if err := storage.DeleteAppointment(appointmentID); err != nil {
+			respondError(w, http.StatusInternalServerError, "Could not delete appointment")
+			return
+		}
+
+		// Send WebSocket notification
+		wsManager.BroadcastToUser(user.ID, map[string]interface{}{
+			"type":           "appointment_deleted",
+			"appointment_id": appointmentID,
+		})
+
+		respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	}
+}
+
+// ======================
 // Router Setup
 // ======================
 
@@ -491,6 +593,8 @@ func NewRouter(storage *Storage, wsManager *WSManager) *mux.Router {
 
 	// Appointments
 	api.HandleFunc("/appointments", handleCreateAppointment(storage, wsManager)).Methods("POST")
+	api.HandleFunc("/appointments/{appointmentID}", handleUpdateAppointment(storage, wsManager)).Methods("PUT")
+	api.HandleFunc("/appointments/{appointmentID}", handleDeleteAppointment(storage, wsManager)).Methods("DELETE")
 
 	// Agenda
 	api.HandleFunc("/agenda", handleGetUserAgenda(storage)).Methods("GET")

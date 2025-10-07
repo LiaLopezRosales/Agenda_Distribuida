@@ -85,6 +85,8 @@ func NewAPI(
 	protected.HandleFunc("/groups", api.handleCreateGroup()).Methods("POST")
 	protected.HandleFunc("/groups/{groupID}/members", api.handleAddMember()).Methods("POST")
 	protected.HandleFunc("/appointments", api.handleCreateAppointment()).Methods("POST")
+	protected.HandleFunc("/appointments/{appointmentID}", api.handleUpdateAppointment()).Methods("PUT")
+	protected.HandleFunc("/appointments/{appointmentID}", api.handleDeleteAppointment()).Methods("DELETE")
 	protected.HandleFunc("/agenda", api.handleGetUserAgenda()).Methods("GET")
 	protected.HandleFunc("/groups/{groupID}/agenda", api.handleGetGroupAgenda()).Methods("GET")
 	// Notifications
@@ -181,82 +183,92 @@ func (a *API) handleLogin() http.HandlerFunc {
 }
 
 func (a *API) handleCreateGroup() http.HandlerFunc {
-    type req struct {
-        Name        string `json:"name"`
-        Description string `json:"description"`
-    }
-    return func(w http.ResponseWriter, r *http.Request) {
-        var in req
-        if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-            http.Error(w, err.Error(), http.StatusBadRequest)
-            return
-        }
-        uid, _ := GetUserIDFromContext(r.Context())
-        user, _ := a.users.GetUserByID(uid)
-        g := &Group{
-            Name:            in.Name,
-            Description:     in.Description,
-            CreatorID:       user.ID,
-            CreatorUserName: user.Username,
-        }
-        if err := a.groupsRepo.CreateGroup(g); err != nil {
-            http.Error(w, err.Error(), http.StatusInternalServerError)
-            return
-        }
-        // Añadir como miembro con mayor rango
-        _ = a.groupsRepo.AddGroupMember(g.ID, user.ID, 10, nil)
-        json.NewEncoder(w).Encode(g)
-    }
+	type req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		uid, _ := GetUserIDFromContext(r.Context())
+		user, _ := a.users.GetUserByID(uid)
+		g := &Group{
+			Name:            in.Name,
+			Description:     in.Description,
+			CreatorID:       user.ID,
+			CreatorUserName: user.Username,
+		}
+		if err := a.groupsRepo.CreateGroup(g); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Añadir como miembro con mayor rango
+		_ = a.groupsRepo.AddGroupMember(g.ID, user.ID, 10, nil)
+		json.NewEncoder(w).Encode(g)
+	}
 }
 
 func (a *API) handleAddMember() http.HandlerFunc {
-    type req struct {
-        Username string `json:"username"` // Cambiado a username
-        Rank     int    `json:"rank"`
-    }
-    return func(w http.ResponseWriter, r *http.Request) {
-        var in req
-        if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-            http.Error(w, err.Error(), http.StatusBadRequest)
-            return
-        }
-        vars := mux.Vars(r)
-        groupID := parseID(vars["groupID"])
-        actorID, _ := GetUserIDFromContext(r.Context())
+	type req struct {
+		Username string `json:"username"` // Cambiado a username
+		Rank     int    `json:"rank"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
-        // Buscar el usuario por username
-        user, err := a.users.GetUserByUsername(in.Username)
-        if err != nil || user == nil {
-            http.Error(w, "User not found", http.StatusBadRequest)
-            return
-        }
+		// Validate input
+		if in.Username == "" {
+			http.Error(w, "Username is required", http.StatusBadRequest)
+			return
+		}
+		if in.Rank <= 0 {
+			http.Error(w, "Rank must be a positive number", http.StatusBadRequest)
+			return
+		}
+		vars := mux.Vars(r)
+		groupID := parseID(vars["groupID"])
+		actorID, _ := GetUserIDFromContext(r.Context())
 
-        // Validar que no sea ya miembro
-        if _, err := a.groupsRepo.GetMemberRank(groupID, user.ID); err == nil {
-            http.Error(w, "User is already a member", http.StatusBadRequest)
-            return
-        }
+		// Buscar el usuario por username
+		user, err := a.users.GetUserByUsername(in.Username)
+		if err != nil || user == nil {
+			http.Error(w, "User not found", http.StatusBadRequest)
+			return
+		}
 
-        if err := a.groups.AddMember(actorID, groupID, user.ID, in.Rank); err != nil {
-            if err == ErrUnauthorized {
-                http.Error(w, err.Error(), http.StatusForbidden)
-                return
-            }
-            http.Error(w, err.Error(), http.StatusInternalServerError)
-            return
-        }
+		// Validar que no sea ya miembro
+		if _, err := a.groupsRepo.GetMemberRank(groupID, user.ID); err == nil {
+			http.Error(w, "User is already a member", http.StatusBadRequest)
+			return
+		}
 
-        resp := map[string]interface{}{
-            "status":   "member added",
-            "group_id": groupID,
-            "user_id":  user.ID,
-            "username": user.Username,
-            "rank":     in.Rank,
-            "added_by": actorID,
-        }
-        w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(resp)
-    }
+		if err := a.groups.AddMember(actorID, groupID, user.ID, in.Rank); err != nil {
+			if err == ErrUnauthorized {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		resp := map[string]interface{}{
+			"status":   "member added",
+			"group_id": groupID,
+			"user_id":  user.ID,
+			"username": user.Username,
+			"rank":     in.Rank,
+			"added_by": actorID,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
 }
 
 func (a *API) handleCreateAppointment() http.HandlerFunc {
@@ -568,4 +580,82 @@ func (a *API) filterAppointmentForViewer(appointment Appointment, viewerID int64
 		appointment.Description = ""
 	}
 	return appointment
+}
+
+// handleUpdateAppointment handles PUT /api/appointments/{appointmentID}
+func (a *API) handleUpdateAppointment() http.HandlerFunc {
+	type req struct {
+		Title       string    `json:"title"`
+		Description string    `json:"description"`
+		Start       time.Time `json:"start"`
+		End         time.Time `json:"end"`
+		Privacy     Privacy   `json:"privacy"`
+		GroupID     *int64    `json:"group_id,omitempty"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
+			return
+		}
+
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		appointment := Appointment{
+			ID:          appointmentID,
+			Title:       in.Title,
+			Description: in.Description,
+			Start:       in.Start,
+			End:         in.End,
+			Privacy:     in.Privacy,
+			GroupID:     in.GroupID,
+		}
+
+		updated, err := a.apps.UpdateAppointment(userID, appointment)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
+	}
+}
+
+// handleDeleteAppointment handles DELETE /api/appointments/{appointmentID}
+func (a *API) handleDeleteAppointment() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
+			return
+		}
+
+		err := a.apps.DeleteAppointment(userID, appointmentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	}
 }

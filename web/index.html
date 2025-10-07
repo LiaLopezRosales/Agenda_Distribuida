@@ -1730,6 +1730,29 @@
       font-size: 12px;
       color: #5f6368;
     }
+
+    /* Button styles for edit/delete functionality */
+    .btn-danger {
+      background: #ea4335;
+      color: white;
+      border-color: #ea4335;
+    }
+
+    .btn-danger:hover {
+      background: #d33b2c;
+      border-color: #d33b2c;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+
+    .modal-footer .btn {
+      margin: 0 4px;
+    }
   </style>
 </head>
 <body>
@@ -1816,7 +1839,7 @@
   <div class="modal" id="eventModal">
     <div class="modal-content">
       <div class="modal-header">
-        <h2 class="modal-title">Create Event</h2>
+        <h2 class="modal-title" id="eventModalTitle">Create Event</h2>
         <button class="close-btn" id="closeEventModal">&times;</button>
       </div>
       <div class="modal-body">
@@ -2019,7 +2042,17 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn" id="closeEventDetails">Close</button>
+        <div style="display: flex; justify-content: space-between; width: 100%;">
+          <div>
+            <button class="btn btn-danger" id="deleteEventBtn" style="background: #ea4335; color: white; border-color: #ea4335; display: none;">
+              Delete Event
+            </button>
+          </div>
+          <div>
+            <button class="btn" id="editEventBtn" style="margin-right: 8px; display: none;">Edit Event</button>
+            <button class="btn" id="closeEventDetails">Close</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

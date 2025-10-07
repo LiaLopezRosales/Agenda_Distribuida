@@ -24,8 +24,11 @@ type GroupRepository interface {
 
 type AppointmentRepository interface {
 	CreateAppointment(a *Appointment) error
+	UpdateAppointment(a *Appointment) error
+	DeleteAppointment(appointmentID int64) error
 	AddParticipant(p *Participant) error
 	HasConflict(userID int64, start, end time.Time) (bool, error)
+	HasConflictExcluding(userID int64, start, end time.Time, excludeAppointmentID int64) (bool, error)
 	CreateGroupAppointment(a *Appointment) ([]Participant, error)
 	GetUserAgenda(userID int64, start, end time.Time) ([]Appointment, error)
 	GetGroupAgenda(groupID int64, start, end time.Time) ([]Appointment, error)
@@ -69,6 +72,8 @@ type GroupService interface {
 type AppointmentService interface {
 	CreatePersonalAppointment(ownerID int64, a Appointment) (*Appointment, error)
 	CreateGroupAppointment(ownerID int64, a Appointment) (*Appointment, []Participant, error)
+	UpdateAppointment(ownerID int64, a Appointment) (*Appointment, error)
+	DeleteAppointment(ownerID int64, appointmentID int64) error
 	GetAppointmentByID(appointmentID int64) (*Appointment, error)
 	GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error)
 }

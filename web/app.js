@@ -10,7 +10,9 @@
     groups: [],
     user: null,
     personalEvents: [],
-    viewingFromPersonal: false
+    viewingFromPersonal: false,
+    currentAppointment: null,
+    editingAppointment: null
   };
 
   const api = (path, opts = {}) => {
@@ -132,6 +134,8 @@
     // Event details
     $('closeEventDetailsModal').onclick = hideEventDetailsModal;
     $('closeEventDetails').onclick = hideEventDetailsModal;
+    $('editEventBtn').onclick = editEvent;
+    $('deleteEventBtn').onclick = deleteEvent;
     
     // Override the event details close behavior when viewing from Personal
     const originalCloseEventDetails = $('closeEventDetailsModal');
@@ -876,6 +880,8 @@
   function hideEventModal() {
     $('eventModal').classList.remove('show');
     $('eventForm').reset();
+    state.editingAppointment = null; // Reset editing state
+    $('eventModalTitle').textContent = 'Create Event'; // Reset modal title
   }
 
   function formatDateTimeLocal(date) {
@@ -917,13 +923,26 @@
       };
       // Log form data antes de enviar
       console.log('[saveEvent] Form data to send:', formData);
-      // Log endpoint y body
-      console.log('[saveEvent] POST /api/appointments', JSON.stringify(formData));
-      const res = await api('/api/appointments', {
-        method: 'POST',
-        body: JSON.stringify(formData)
-      });
-      console.log('[saveEvent] Event created successfully:', res);
+      
+      let response;
+      if (state.editingAppointment) {
+        // Update existing appointment
+        console.log('[saveEvent] Updating appointment:', state.editingAppointment);
+        response = await api(`/api/appointments/${state.editingAppointment}`, {
+          method: 'PUT',
+          body: JSON.stringify(formData)
+        });
+        console.log('[saveEvent] Event updated successfully:', response);
+      } else {
+        // Create new appointment
+        console.log('[saveEvent] Creating new appointment');
+        response = await api('/api/appointments', {
+          method: 'POST',
+          body: JSON.stringify(formData)
+        });
+        console.log('[saveEvent] Event created successfully:', response);
+      }
+      
       hideEventModal();
       loadEvents();
     } catch (error) {
@@ -1022,15 +1041,17 @@
       const description = $('groupDesc').value.trim();
       if (!name) { alert('Group name is required'); return; }
 
-      await api('/api/groups', {
+      const response = await api('/api/groups', {
         method: 'POST',
         body: JSON.stringify({ name, description })
       });
 
+      console.log('Group created successfully:', response);
       hideGroupModal();
       await loadGroups();
       updateEventGroupSelect(); // keep the event modal's group list in sync
     } catch (e) {
+      console.error('Failed to create group:', e);
       alert('Failed to create group: ' + e.message);
     }
   }
@@ -1101,18 +1122,20 @@
 
           console.log('DEBUG username:', username, 'rank:', rank);
           if (!username) { alert('Username is required'); return; }
-          if (Number.isNaN(rank)) { alert('Rank is required'); return; }
+          if (Number.isNaN(rank) || rank <= 0) { alert('Rank must be a positive number'); return; }
 
-          await api(`/api/groups/${groupId}/members`, {
+          const response = await api(`/api/groups/${groupId}/members`, {
             method: 'POST',
             body: JSON.stringify({ username, rank })
           });
 
+          console.log('Member added successfully:', response);
           $('newMemberUsername').value = '';
           $('newMemberRank').value = '';
 
           await openGroupDetails(groupId);
         } catch (e) {
+          console.error('Failed to add member:', e);
           alert('Failed to add member: ' + e.message);
         }
       };
@@ -1148,6 +1171,9 @@
       
       console.log('Event details loaded:', appointment);
       
+      // Store current appointment for editing
+      state.currentAppointment = appointment;
+      
       // Populate appointment details
       $('detailTitle').textContent = appointment.title;
       $('detailDescription').textContent = appointment.description || 'No description';
@@ -1182,6 +1208,18 @@
         participantsSection.style.display = 'none';
       }
       
+      // Show/hide edit and delete buttons based on ownership
+      const editBtn = $('editEventBtn');
+      const deleteBtn = $('deleteEventBtn');
+      
+      if (appointment.owner_id === state.user.id) {
+        editBtn.style.display = 'inline-block';
+        deleteBtn.style.display = 'inline-block';
+      } else {
+        editBtn.style.display = 'none';
+        deleteBtn.style.display = 'none';
+      }
+      
       $('eventDetailsModal').classList.add('show');
       console.log('Event details modal shown');
     } catch (error) {
@@ -1197,6 +1235,56 @@
     if (state.viewingFromPersonal) {
       // The Personal modal should still be open, so we just return to it
       // No need to do anything special as the Personal modal remains open
+    }
+  }
+
+  // Add new function to handle event editing
+  function editEvent() {
+    if (!state.currentAppointment) return;
+    
+    const appointment = state.currentAppointment;
+    
+    // Populate the event form with current data
+    $('eventTitle').value = appointment.title;
+    $('eventDescription').value = appointment.description || '';
+    $('eventStart').value = formatDateTimeLocal(new Date(appointment.start));
+    $('eventEnd').value = formatDateTimeLocal(new Date(appointment.end));
+    $('eventPrivacy').value = appointment.privacy;
+    $('eventGroup').value = appointment.group_id || '';
+    
+    // Set flag to indicate we're editing
+    state.editingAppointment = appointment.id;
+    
+    // Hide event details modal and show event modal
+    hideEventDetailsModal();
+    showEventModal();
+    
+    // Update modal title
+    $('eventModalTitle').textContent = 'Edit Event';
+  }
+
+  // Add new function to handle event deletion
+  async function deleteEvent() {
+    if (!state.currentAppointment) return;
+    
+    const appointment = state.currentAppointment;
+    
+    // Confirm deletion
+    const confirmed = confirm(`Are you sure you want to delete "${appointment.title}"? This action cannot be undone.`);
+    if (!confirmed) return;
+    
+    try {
+      await api(`/api/appointments/${appointment.id}`, {
+        method: 'DELETE'
+      });
+      
+      console.log('Event deleted successfully');
+      hideEventDetailsModal();
+      loadEvents(); // Refresh the calendar
+      alert('Event deleted successfully');
+    } catch (error) {
+      console.error('Failed to delete event:', error);
+      alert('Failed to delete event: ' + error.message);
     }
   }
 
