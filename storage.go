@@ -148,6 +148,16 @@ func (s *Storage) GetUserByUsername(username string) (*User, error) {
 	return &u, nil
 }
 
+func (s *Storage) GetUserByEmail(email string) (*User, error) {
+	row := s.db.QueryRow(`SELECT id, username, email, password_hash, display_name, created_at, updated_at 
+		FROM users WHERE email=?`, email)
+	var u User
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.DisplayName, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 func (s *Storage) GetUserByID(id int64) (*User, error) {
 	row := s.db.QueryRow(`SELECT id, username, email, password_hash, display_name, created_at, updated_at FROM users WHERE id=?`, id)
 	var u User
@@ -155,6 +165,28 @@ func (s *Storage) GetUserByID(id int64) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+func (s *Storage) UpdateUser(user *User) error {
+	now := time.Now()
+	_, err := s.db.Exec(`UPDATE users 
+		SET username=?, email=?, display_name=?, updated_at=?
+		WHERE id=?`,
+		user.Username, user.Email, user.DisplayName, now, user.ID)
+	if err != nil {
+		return err
+	}
+	user.UpdatedAt = now
+	return nil
+}
+
+func (s *Storage) UpdatePassword(userID int64, newPasswordHash string) error {
+	now := time.Now()
+	_, err := s.db.Exec(`UPDATE users 
+		SET password_hash=?, updated_at=?
+		WHERE id=?`,
+		newPasswordHash, now, userID)
+	return err
 }
 
 // ====================

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // This file shows how to wire handlers to services (instead of Storage).
@@ -105,6 +106,8 @@ func NewAPI(
 	protected.HandleFunc("/appointments/{appointmentID}/my-status", api.handleGetMyParticipationStatus()).Methods("GET")
 	// NEW endpoints used by UI
 	protected.HandleFunc("/me", api.handleMe()).Methods("GET")
+	protected.HandleFunc("/me/profile", api.handleUpdateProfile()).Methods("PUT")
+	protected.HandleFunc("/me/password", api.handleUpdatePassword()).Methods("PUT")
 	protected.HandleFunc("/groups", api.handleListMyGroups()).Methods("GET")
 	protected.HandleFunc("/groups/{groupID}", api.handleGetGroupDetail()).Methods("GET")
 	// Appointment Details
@@ -891,5 +894,124 @@ func (a *API) handleGetMyParticipationStatus() http.HandlerFunc {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": participant.Status,
 		})
+	}
+}
+
+// handleUpdateProfile handles PUT /api/me/profile
+func (a *API) handleUpdateProfile() http.HandlerFunc {
+	type req struct {
+		DisplayName     string `json:"display_name"`
+		Username        string `json:"username"`
+		Email           string `json:"email"`
+		CurrentPassword string `json:"current_password"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := GetUserIDFromContext(r.Context())
+
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Validate current password
+		user, err := a.users.GetUserByID(userID)
+		if err != nil {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.CurrentPassword)); err != nil {
+			http.Error(w, "Invalid current password", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate email format
+		if in.Email != "" {
+			if _, err := mail.ParseAddress(in.Email); err != nil {
+				http.Error(w, "Invalid email format", http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Check if username is being changed and if it's already taken
+		if in.Username != user.Username {
+			existing, _ := a.users.GetUserByUsername(in.Username)
+			if existing != nil && existing.ID != userID {
+				http.Error(w, "Username already taken", http.StatusConflict)
+				return
+			}
+		}
+
+		// Check if email is being changed and if it's already taken
+		if in.Email != user.Email {
+			existing, _ := a.users.GetUserByEmail(in.Email)
+			if existing != nil && existing.ID != userID {
+				http.Error(w, "Email already in use", http.StatusConflict)
+				return
+			}
+		}
+
+		// Update user
+		user.DisplayName = in.DisplayName
+		user.Username = in.Username
+		user.Email = in.Email
+
+		if err := a.users.UpdateUser(user); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(user)
+	}
+}
+
+// handleUpdatePassword handles PUT /api/me/password
+func (a *API) handleUpdatePassword() http.HandlerFunc {
+	type req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := GetUserIDFromContext(r.Context())
+
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Validate current password
+		user, err := a.users.GetUserByID(userID)
+		if err != nil {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.CurrentPassword)); err != nil {
+			http.Error(w, "Invalid current password", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate new password
+		if len(in.NewPassword) < 6 {
+			http.Error(w, "Password must be at least 6 characters", http.StatusBadRequest)
+			return
+		}
+
+		// Hash new password
+		hash, err := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "Error hashing password", http.StatusInternalServerError)
+			return
+		}
+
+		if err := a.users.UpdatePassword(userID, string(hash)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Password updated successfully"})
 	}
 }

@@ -1768,7 +1768,7 @@
     </div>
     <div class="header-right">
       <div class="user-info" id="userInfo" style="display: none;">
-        <span id="userName">User</span>
+        <span id="userName" style="cursor: pointer; color: #1a73e8; font-weight: 500;" title="Click to edit profile">User</span>
         <button class="btn" id="logoutBtn">Logout</button>
       </div>
       <div class="auth-section" id="authSection">
@@ -1971,6 +1971,48 @@
       <div class="modal-footer">
         <button class="btn" id="cancelEditGroup">Cancel</button>
         <button class="btn btn-primary" id="saveEditGroup">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Profile Settings Modal -->
+  <div class="modal" id="profileSettingsModal">
+    <div class="modal-content" style="max-width: 500px;">
+      <div class="modal-header">
+        <h2 class="modal-title">Profile Settings</h2>
+        <button class="close-btn" id="closeProfileSettingsModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" for="settingsDisplayName">Display Name</label>
+          <input type="text" class="form-input" id="settingsDisplayName" placeholder="Your Name">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="settingsUsername">Username</label>
+          <input type="text" class="form-input" id="settingsUsername" placeholder="username">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="settingsEmail">Email</label>
+          <input type="email" class="form-input" id="settingsEmail" placeholder="email@example.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="settingsCurrentPassword">Current Password (required) *</label>
+          <input type="password" class="form-input" id="settingsCurrentPassword" placeholder="Enter current password" required>
+        </div>
+        <hr style="margin: 20px 0; border: none; border-top: 1px solid #dadce0;">
+        <h3 style="font-size: 16px; margin-bottom: 12px;">Change Password (optional)</h3>
+        <div class="form-group">
+          <label class="form-label" for="settingsNewPassword">New Password</label>
+          <input type="password" class="form-input" id="settingsNewPassword" placeholder="Leave blank to keep current">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="settingsConfirmPassword">Confirm New Password</label>
+          <input type="password" class="form-input" id="settingsConfirmPassword" placeholder="Confirm new password">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="cancelProfileSettings">Cancel</button>
+        <button class="btn btn-primary" id="saveProfileSettings">Save Changes</button>
       </div>
     </div>
   </div>

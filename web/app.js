@@ -157,6 +157,16 @@
   if (acceptInvitationBtn) acceptInvitationBtn.addEventListener('click', acceptInvitation);
   const rejectInvitationBtn = $('rejectInvitationBtn');
   if (rejectInvitationBtn) rejectInvitationBtn.addEventListener('click', rejectInvitation);
+  
+  // Profile settings
+  const userNameDisplay = $('userName');
+  if (userNameDisplay) userNameDisplay.addEventListener('click', showProfileSettings);
+  const closeProfileSettingsModalBtn = $('closeProfileSettingsModal');
+  if (closeProfileSettingsModalBtn) closeProfileSettingsModalBtn.addEventListener('click', hideProfileSettings);
+  const cancelProfileSettingsBtn = $('cancelProfileSettings');
+  if (cancelProfileSettingsBtn) cancelProfileSettingsBtn.addEventListener('click', hideProfileSettings);
+  const saveProfileSettingsBtn = $('saveProfileSettings');
+  if (saveProfileSettingsBtn) saveProfileSettingsBtn.addEventListener('click', saveProfileSettings);
     
     // Event details
     $('closeEventDetailsModal').onclick = hideEventDetailsModal;
@@ -2149,6 +2159,99 @@
         return `You have been invited to join a group`;
       default:
         return `Notification: ${notification.type}`;
+    }
+  }
+
+  // ======================
+  // Profile Settings Functions
+  // ======================
+
+  function showProfileSettings() {
+    if (!state.user) return;
+    
+    // Pre-fill with current user data
+    $('settingsDisplayName').value = state.user.display_name || '';
+    $('settingsUsername').value = state.user.username || '';
+    $('settingsEmail').value = state.user.email || '';
+    $('settingsCurrentPassword').value = '';
+    $('settingsNewPassword').value = '';
+    $('settingsConfirmPassword').value = '';
+    
+    $('profileSettingsModal').classList.add('show');
+    $('profileSettingsModal').style.display = 'flex';
+  }
+
+  function hideProfileSettings() {
+    $('profileSettingsModal').classList.remove('show');
+    $('profileSettingsModal').style.display = 'none';
+  }
+
+  async function saveProfileSettings() {
+    try {
+      const displayName = $('settingsDisplayName').value.trim();
+      const username = $('settingsUsername').value.trim();
+      const email = $('settingsEmail').value.trim();
+      const currentPassword = $('settingsCurrentPassword').value;
+      const newPassword = $('settingsNewPassword').value;
+      const confirmPassword = $('settingsConfirmPassword').value;
+      
+      // Validate required fields
+      if (!currentPassword) {
+        alert('Current password is required for security');
+        return;
+      }
+      
+      if (!displayName || !username || !email) {
+        alert('Display name, username, and email are required');
+        return;
+      }
+      
+      // Update profile
+      const profileData = {
+        display_name: displayName,
+        username: username,
+        email: email,
+        current_password: currentPassword
+      };
+      
+      const updatedUser = await api('/api/me/profile', {
+        method: 'PUT',
+        body: JSON.stringify(profileData)
+      });
+      
+      // Update password if provided
+      if (newPassword) {
+        if (newPassword !== confirmPassword) {
+          alert('New passwords do not match');
+          return;
+        }
+        
+        if (newPassword.length < 6) {
+          alert('New password must be at least 6 characters');
+          return;
+        }
+        
+        await api('/api/me/password', {
+          method: 'PUT',
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_password: newPassword
+          })
+        });
+        
+        alert('Profile and password updated successfully!');
+      } else {
+        alert('Profile updated successfully!');
+      }
+      
+      // Update local state
+      state.user = updatedUser;
+      $('userName').textContent = updatedUser.display_name || updatedUser.username;
+      
+      hideProfileSettings();
+    } catch (e) {
+      console.error('Failed to update profile:', e);
+      alert('Failed to update profile: ' + e.message);
     }
   }
 
