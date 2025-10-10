@@ -14,7 +14,8 @@
     currentAppointment: null,
     editingAppointment: null,
     currentGroup: null,
-    editingGroupField: null
+    editingGroupField: null,
+    currentNotification: null
   };
 
   const api = (path, opts = {}) => {
@@ -146,6 +147,16 @@
   if (cancelEditGroupBtn) cancelEditGroupBtn.addEventListener('click', hideEditGroupModal);
   const saveEditGroupBtn = $('saveEditGroup');
   if (saveEditGroupBtn) saveEditGroupBtn.addEventListener('click', saveEditGroup);
+  
+  // Notification details
+  const closeNotificationDetailsModalBtn = $('closeNotificationDetailsModal');
+  if (closeNotificationDetailsModalBtn) closeNotificationDetailsModalBtn.addEventListener('click', hideNotificationDetailsModal);
+  const closeNotificationDetailsBtn = $('closeNotificationDetails');
+  if (closeNotificationDetailsBtn) closeNotificationDetailsBtn.addEventListener('click', hideNotificationDetailsModal);
+  const acceptInvitationBtn = $('acceptInvitationBtn');
+  if (acceptInvitationBtn) acceptInvitationBtn.addEventListener('click', acceptInvitation);
+  const rejectInvitationBtn = $('rejectInvitationBtn');
+  if (rejectInvitationBtn) rejectInvitationBtn.addEventListener('click', rejectInvitation);
     
     // Event details
     $('closeEventDetailsModal').onclick = hideEventDetailsModal;
@@ -1753,21 +1764,27 @@
       `;
     }).join('');
 
-    // Attach click handlers to mark-as-read
+    // Attach click handlers to show notification details
     container.querySelectorAll('.notification-item').forEach(el => {
       el.addEventListener('click', async () => {
         const id = el.getAttribute('data-id');
         const item = (state.notifications || []).find(x => String(x.id) === String(id));
-        if (!item || item.read_at) return; // already read
-        try {
-          await api(`/api/notifications/${id}/read`, { method: 'POST' });
-          // Update local state
-          item.read_at = new Date().toISOString();
-          el.classList.remove('unread');
-          updateUnreadNotificationsCount();
-        } catch (err) {
-          console.error('Failed to mark notification read:', err);
+        if (!item) return;
+        
+        // Mark as read if not already read
+        if (!item.read_at) {
+          try {
+            await api(`/api/notifications/${id}/read`, { method: 'POST' });
+            item.read_at = new Date().toISOString();
+            el.classList.remove('unread');
+            updateUnreadNotificationsCount();
+          } catch (err) {
+            console.error('Failed to mark notification read:', err);
+          }
         }
+        
+        // Show notification details
+        await showNotificationDetails(item);
       });
     });
   }
@@ -1947,6 +1964,166 @@
   // Make functions globally available for onclick handlers
   window.editMemberRank = editMemberRank;
   window.removeMember = removeMember;
+
+  // ======================
+  // Notification Details Functions
+  // ======================
+
+  async function showNotificationDetails(notification) {
+    try {
+      state.currentNotification = notification;
+      
+      // Parse notification payload
+      let payload = {};
+      try {
+        payload = JSON.parse(notification.payload || '{}');
+      } catch (e) {
+        console.warn('Failed to parse notification payload:', e);
+      }
+      
+      // Update modal content
+      $('notificationType').textContent = getNotificationTypeLabel(notification.type);
+      $('notificationMessage').textContent = getNotificationMessage(notification, payload);
+      $('notificationDate').textContent = formatDateTime(notification.created_at);
+      
+      // Show/hide sections based on notification type
+      const appointmentDetailsSection = $('appointmentDetailsSection');
+      const invitationActionsSection = $('invitationActionsSection');
+      
+      if (notification.type === 'invite' && payload.appointment_id) {
+        // Load appointment details
+        try {
+          const appointment = await api(`/api/appointments/${payload.appointment_id}`);
+          if (appointment) {
+            $('appointmentDetails').innerHTML = `
+              <div style="margin-bottom: 8px;"><strong>Title:</strong> ${escapeHtml(appointment.title)}</div>
+              <div style="margin-bottom: 8px;"><strong>Description:</strong> ${escapeHtml(appointment.description || 'No description')}</div>
+              <div style="margin-bottom: 8px;"><strong>Start:</strong> ${formatDateTime(appointment.start)}</div>
+              <div style="margin-bottom: 8px;"><strong>End:</strong> ${formatDateTime(appointment.end)}</div>
+              <div><strong>Privacy:</strong> ${appointment.privacy}</div>
+            `;
+            appointmentDetailsSection.style.display = 'block';
+            invitationActionsSection.style.display = 'block';
+          }
+        } catch (e) {
+          console.error('Failed to load appointment details:', e);
+          appointmentDetailsSection.style.display = 'none';
+          invitationActionsSection.style.display = 'none';
+        }
+      } else {
+        appointmentDetailsSection.style.display = 'none';
+        invitationActionsSection.style.display = 'none';
+      }
+      
+      // Show modal
+      $('notificationDetailsModal').classList.add('show');
+      $('notificationDetailsModal').style.display = 'flex';
+      
+    } catch (e) {
+      console.error('Failed to show notification details:', e);
+      alert('Failed to load notification details: ' + e.message);
+    }
+  }
+
+  function hideNotificationDetailsModal() {
+    $('notificationDetailsModal').classList.remove('show');
+    $('notificationDetailsModal').style.display = 'none';
+    state.currentNotification = null;
+  }
+
+  async function acceptInvitation() {
+    if (!state.currentNotification) return;
+    
+    try {
+      const payload = JSON.parse(state.currentNotification.payload || '{}');
+      if (!payload.appointment_id) {
+        alert('Invalid notification data');
+        return;
+      }
+      
+      await api(`/api/appointments/${payload.appointment_id}/accept`, {
+        method: 'POST'
+      });
+      
+      console.log('Invitation accepted successfully');
+      alert('Invitation accepted successfully!');
+      
+      // Hide modal and refresh notifications
+      hideNotificationDetailsModal();
+      await loadNotifications();
+      await loadEvents(); // Refresh calendar
+      
+    } catch (e) {
+      console.error('Failed to accept invitation:', e);
+      alert('Failed to accept invitation: ' + e.message);
+    }
+  }
+
+  async function rejectInvitation() {
+    if (!state.currentNotification) return;
+    
+    const confirmed = confirm('Are you sure you want to reject this invitation?');
+    if (!confirmed) return;
+    
+    try {
+      const payload = JSON.parse(state.currentNotification.payload || '{}');
+      if (!payload.appointment_id) {
+        alert('Invalid notification data');
+        return;
+      }
+      
+      await api(`/api/appointments/${payload.appointment_id}/reject`, {
+        method: 'POST'
+      });
+      
+      console.log('Invitation rejected successfully');
+      alert('Invitation rejected successfully!');
+      
+      // Hide modal and refresh notifications
+      hideNotificationDetailsModal();
+      await loadNotifications();
+      await loadEvents(); // Refresh calendar
+      
+    } catch (e) {
+      console.error('Failed to reject invitation:', e);
+      alert('Failed to reject invitation: ' + e.message);
+    }
+  }
+
+  function getNotificationTypeLabel(type) {
+    const labels = {
+      'invite': 'Event Invitation',
+      'created': 'Event Created',
+      'accepted': 'Invitation Accepted',
+      'declined': 'Invitation Declined',
+      'invitation_accepted': 'Invitation Accepted',
+      'invitation_declined': 'Invitation Declined',
+      'group_created': 'Group Created',
+      'group_invite': 'Group Invitation'
+    };
+    return labels[type] || type;
+  }
+
+  function getNotificationMessage(notification, payload) {
+    switch (notification.type) {
+      case 'invite':
+        return `You have been invited to an event`;
+      case 'created':
+        return `A new event has been created`;
+      case 'accepted':
+      case 'invitation_accepted':
+        return `Your invitation has been accepted`;
+      case 'declined':
+      case 'invitation_declined':
+        return `Your invitation has been declined`;
+      case 'group_created':
+        return `A new group has been created`;
+      case 'group_invite':
+        return `You have been invited to join a group`;
+      default:
+        return `Notification: ${notification.type}`;
+    }
+  }
 
   // Initialize the app
   init();

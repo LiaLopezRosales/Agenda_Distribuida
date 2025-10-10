@@ -97,6 +97,8 @@ func NewAPI(
 	protected.HandleFunc("/notifications", api.handleListNotifications()).Methods("GET")
 	protected.HandleFunc("/notifications/unread", api.handleListUnreadNotifications()).Methods("GET")
 	protected.HandleFunc("/notifications/{id}/read", api.handleMarkNotificationRead()).Methods("POST")
+	protected.HandleFunc("/appointments/{appointmentID}/accept", api.handleAcceptInvitation()).Methods("POST")
+	protected.HandleFunc("/appointments/{appointmentID}/reject", api.handleRejectInvitation()).Methods("POST")
 	// NEW endpoints used by UI
 	protected.HandleFunc("/me", api.handleMe()).Methods("GET")
 	protected.HandleFunc("/groups", api.handleListMyGroups()).Methods("GET")
@@ -802,5 +804,59 @@ func (a *API) handleRemoveMember() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "removed"})
+	}
+}
+
+// handleAcceptInvitation handles POST /api/appointments/{appointmentID}/accept
+func (a *API) handleAcceptInvitation() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
+			return
+		}
+
+		err := a.apps.AcceptInvitation(userID, appointmentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	}
+}
+
+// handleRejectInvitation handles POST /api/appointments/{appointmentID}/reject
+func (a *API) handleRejectInvitation() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
+			return
+		}
+
+		err := a.apps.RejectInvitation(userID, appointmentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "rejected"})
 	}
 }

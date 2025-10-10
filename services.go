@@ -227,6 +227,78 @@ func (s *groupService) RemoveMember(actorID, groupID, userID int64) error {
 	return nil
 }
 
+// AcceptInvitation accepts an appointment invitation
+func (s *appointmentService) AcceptInvitation(userID int64, appointmentID int64) error {
+	// Verify the user is a participant
+	participant, err := s.apps.GetParticipantByAppointmentAndUser(appointmentID, userID)
+	if err != nil {
+		return fmt.Errorf("invitation not found")
+	}
+
+	// Check if already accepted or declined
+	if participant.Status == StatusAccepted {
+		return fmt.Errorf("invitation already accepted")
+	}
+	if participant.Status == StatusDeclined {
+		return fmt.Errorf("invitation already declined")
+	}
+
+	// Update status to accepted
+	if err := s.apps.UpdateParticipantStatus(appointmentID, userID, StatusAccepted); err != nil {
+		return err
+	}
+
+	// Create notification for the appointment owner
+	appointment, err := s.apps.GetAppointmentByID(appointmentID)
+	if err == nil && appointment != nil {
+		payload := fmt.Sprintf(`{"appointment_id": %d, "user_id": %d, "status": "accepted"}`, appointmentID, userID)
+		_ = s.notes.AddNotification(&Notification{
+			UserID:    appointment.OwnerID,
+			Type:      "invitation_accepted",
+			Payload:   payload,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	return nil
+}
+
+// RejectInvitation rejects an appointment invitation
+func (s *appointmentService) RejectInvitation(userID int64, appointmentID int64) error {
+	// Verify the user is a participant
+	participant, err := s.apps.GetParticipantByAppointmentAndUser(appointmentID, userID)
+	if err != nil {
+		return fmt.Errorf("invitation not found")
+	}
+
+	// Check if already accepted or declined
+	if participant.Status == StatusAccepted {
+		return fmt.Errorf("invitation already accepted")
+	}
+	if participant.Status == StatusDeclined {
+		return fmt.Errorf("invitation already declined")
+	}
+
+	// Update status to declined
+	if err := s.apps.UpdateParticipantStatus(appointmentID, userID, StatusDeclined); err != nil {
+		return err
+	}
+
+	// Create notification for the appointment owner
+	appointment, err := s.apps.GetAppointmentByID(appointmentID)
+	if err == nil && appointment != nil {
+		payload := fmt.Sprintf(`{"appointment_id": %d, "user_id": %d, "status": "declined"}`, appointmentID, userID)
+		_ = s.notes.AddNotification(&Notification{
+			UserID:    appointment.OwnerID,
+			Type:      "invitation_declined",
+			Payload:   payload,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	return nil
+}
+
 // appointmentService enforces conflicts, privacy, and hierarchy rules.
 // It emits notifications and events as needed.
 type appointmentService struct {

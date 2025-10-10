@@ -31,6 +31,8 @@ type AppointmentRepository interface {
 	UpdateAppointment(a *Appointment) error
 	DeleteAppointment(appointmentID int64) error
 	AddParticipant(p *Participant) error
+	UpdateParticipantStatus(appointmentID, userID int64, status ApptStatus) error
+	GetParticipantByAppointmentAndUser(appointmentID, userID int64) (*Participant, error)
 	HasConflict(userID int64, start, end time.Time) (bool, error)
 	HasConflictExcluding(userID int64, start, end time.Time, excludeAppointmentID int64) (bool, error)
 	CreateGroupAppointment(a *Appointment) ([]Participant, error)
@@ -82,6 +84,8 @@ type AppointmentService interface {
 	CreateGroupAppointment(ownerID int64, a Appointment) (*Appointment, []Participant, error)
 	UpdateAppointment(ownerID int64, a Appointment) (*Appointment, error)
 	DeleteAppointment(ownerID int64, appointmentID int64) error
+	AcceptInvitation(userID int64, appointmentID int64) error
+	RejectInvitation(userID int64, appointmentID int64) error
 	GetAppointmentByID(appointmentID int64) (*Appointment, error)
 	GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error)
 }

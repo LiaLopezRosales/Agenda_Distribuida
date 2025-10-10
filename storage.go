@@ -327,6 +327,27 @@ func (s *Storage) RemoveGroupMember(groupID, userID int64) error {
 	return tx.Commit()
 }
 
+// UpdateParticipantStatus updates a participant's status (accept/reject invitation)
+func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status ApptStatus) error {
+	now := time.Now()
+	_, err := s.db.Exec(`UPDATE participants 
+		SET status=?, updated_at=?
+		WHERE appointment_id=? AND user_id=?`,
+		status, now, appointmentID, userID)
+	return err
+}
+
+// GetParticipantByAppointmentAndUser gets a specific participant
+func (s *Storage) GetParticipantByAppointmentAndUser(appointmentID, userID int64) (*Participant, error) {
+	row := s.db.QueryRow(`SELECT id, appointment_id, user_id, status, is_optional, created_at, updated_at 
+		FROM participants WHERE appointment_id=? AND user_id=?`, appointmentID, userID)
+	var p Participant
+	if err := row.Scan(&p.ID, &p.AppointmentID, &p.UserID, &p.Status, &p.IsOptional, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // List all groups the user belongs to
 func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	rows, err := s.db.Query(`
