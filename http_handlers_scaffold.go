@@ -83,7 +83,11 @@ func NewAPI(
 
 	// Routes protegidas
 	protected.HandleFunc("/groups", api.handleCreateGroup()).Methods("POST")
+	protected.HandleFunc("/groups/{groupID}", api.handleUpdateGroup()).Methods("PUT")
+	protected.HandleFunc("/groups/{groupID}", api.handleDeleteGroup()).Methods("DELETE")
 	protected.HandleFunc("/groups/{groupID}/members", api.handleAddMember()).Methods("POST")
+	protected.HandleFunc("/groups/{groupID}/members/{userID}", api.handleUpdateMember()).Methods("PUT")
+	protected.HandleFunc("/groups/{groupID}/members/{userID}", api.handleRemoveMember()).Methods("DELETE")
 	protected.HandleFunc("/appointments", api.handleCreateAppointment()).Methods("POST")
 	protected.HandleFunc("/appointments/{appointmentID}", api.handleUpdateAppointment()).Methods("PUT")
 	protected.HandleFunc("/appointments/{appointmentID}", api.handleDeleteAppointment()).Methods("DELETE")
@@ -657,5 +661,146 @@ func (a *API) handleDeleteAppointment() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	}
+}
+
+// handleUpdateGroup handles PUT /api/groups/{groupID}
+func (a *API) handleUpdateGroup() http.HandlerFunc {
+	type req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		groupID := parseID(vars["groupID"])
+		if groupID == 0 {
+			http.Error(w, "invalid group ID", http.StatusBadRequest)
+			return
+		}
+
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Validate input - name is required if provided, but we allow partial updates
+		if in.Name == "" && in.Description == "" {
+			http.Error(w, "At least one field (name or description) must be provided", http.StatusBadRequest)
+			return
+		}
+
+		updated, err := a.groups.UpdateGroup(userID, groupID, in.Name, in.Description)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
+	}
+}
+
+// handleDeleteGroup handles DELETE /api/groups/{groupID}
+func (a *API) handleDeleteGroup() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		groupID := parseID(vars["groupID"])
+		if groupID == 0 {
+			http.Error(w, "invalid group ID", http.StatusBadRequest)
+			return
+		}
+
+		err := a.groups.DeleteGroup(userID, groupID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	}
+}
+
+// handleUpdateMember handles PUT /api/groups/{groupID}/members/{userID}
+func (a *API) handleUpdateMember() http.HandlerFunc {
+	type req struct {
+		Rank int `json:"rank"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		groupID := parseID(vars["groupID"])
+		memberUserID := parseID(vars["userID"])
+		if groupID == 0 || memberUserID == 0 {
+			http.Error(w, "invalid group or user ID", http.StatusBadRequest)
+			return
+		}
+
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Validate input
+		if in.Rank <= 0 {
+			http.Error(w, "Rank must be a positive number", http.StatusBadRequest)
+			return
+		}
+
+		err := a.groups.UpdateMember(userID, groupID, memberUserID, in.Rank)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+	}
+}
+
+// handleRemoveMember handles DELETE /api/groups/{groupID}/members/{userID}
+func (a *API) handleRemoveMember() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		groupID := parseID(vars["groupID"])
+		memberUserID := parseID(vars["userID"])
+		if groupID == 0 || memberUserID == 0 {
+			http.Error(w, "invalid group or user ID", http.StatusBadRequest)
+			return
+		}
+
+		err := a.groups.RemoveMember(userID, groupID, memberUserID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "removed"})
 	}
 }

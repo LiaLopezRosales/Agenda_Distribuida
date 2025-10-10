@@ -14,7 +14,11 @@ type UserRepository interface {
 
 type GroupRepository interface {
 	CreateGroup(group *Group) error
+	UpdateGroup(group *Group) error
+	DeleteGroup(groupID int64) error
 	AddGroupMember(groupID, userID int64, rank int, addedBy *int64) error
+	UpdateGroupMember(groupID, userID int64, rank int) error
+	RemoveGroupMember(groupID, userID int64) error
 	GetMemberRank(groupID, userID int64) (int, error)
 	GetGroupMembers(groupID int64) ([]GroupMember, error)
 	IsSuperior(groupID, userA, userB int64) (bool, error)
@@ -66,7 +70,11 @@ type AuthService interface {
 
 type GroupService interface {
 	CreateGroup(ownerID int64, name, description string) (*Group, error)
+	UpdateGroup(ownerID int64, groupID int64, name, description string) (*Group, error)
+	DeleteGroup(ownerID int64, groupID int64) error
 	AddMember(actorID, groupID, userID int64, rank int) error
+	UpdateMember(actorID, groupID, userID int64, rank int) error
+	RemoveMember(actorID, groupID, userID int64) error
 }
 
 type AppointmentService interface {

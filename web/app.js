@@ -12,7 +12,9 @@
     personalEvents: [],
     viewingFromPersonal: false,
     currentAppointment: null,
-    editingAppointment: null
+    editingAppointment: null,
+    currentGroup: null,
+    editingGroupField: null
   };
 
   const api = (path, opts = {}) => {
@@ -130,6 +132,20 @@
   if (cancelGroupBtn) cancelGroupBtn.addEventListener('click', hideGroupModal);
   const saveGroupBtn = $('saveGroup');
   if (saveGroupBtn) saveGroupBtn.addEventListener('click', saveGroup);
+  
+  // Group management
+  const editGroupNameBtn = $('editGroupNameBtn');
+  if (editGroupNameBtn) editGroupNameBtn.addEventListener('click', () => showEditGroupModal('name'));
+  const editGroupDescBtn = $('editGroupDescBtn');
+  if (editGroupDescBtn) editGroupDescBtn.addEventListener('click', () => showEditGroupModal('description'));
+  const deleteGroupBtn = $('deleteGroupBtn');
+  if (deleteGroupBtn) deleteGroupBtn.addEventListener('click', deleteGroup);
+  const closeEditGroupModalBtn = $('closeEditGroupModal');
+  if (closeEditGroupModalBtn) closeEditGroupModalBtn.addEventListener('click', hideEditGroupModal);
+  const cancelEditGroupBtn = $('cancelEditGroup');
+  if (cancelEditGroupBtn) cancelEditGroupBtn.addEventListener('click', hideEditGroupModal);
+  const saveEditGroupBtn = $('saveEditGroup');
+  if (saveEditGroupBtn) saveEditGroupBtn.addEventListener('click', saveEditGroup);
     
     // Event details
     $('closeEventDetailsModal').onclick = hideEventDetailsModal;
@@ -1096,20 +1112,41 @@
       const { group, members } = res || {};
       if (!group) return;
 
+      // Store current group for editing
+      state.currentGroup = group;
+
       $('groupDetailsTitle').textContent = group.name;
+      $('groupDetailsName').textContent = group.name;
       $('groupDetailsDesc').textContent = group.description || '';
 
       const list = $('groupMembersList');
       list.innerHTML = '';
 
-      // Render members with user_id, username and rank
+      // Render members with user_id, username, rank and action buttons
       for (const m of members) {
         const row = document.createElement('div');
         row.style.display = 'flex';
         row.style.justifyContent = 'space-between';
+        row.style.alignItems = 'center';
         row.style.padding = '6px 8px';
         row.style.borderBottom = '1px solid #eee';
-        row.innerHTML = `<span>@${m.username || m.user_id}</span><span>Rank: ${m.rank}</span>`;
+        
+        const memberInfo = document.createElement('div');
+        memberInfo.style.display = 'flex';
+        memberInfo.style.alignItems = 'center';
+        memberInfo.style.gap = '8px';
+        memberInfo.innerHTML = `<span>@${m.username || m.user_id}</span><span style="color: #5f6368;">Rank: ${m.rank}</span>`;
+        
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.gap = '4px';
+        actions.innerHTML = `
+          <button class="btn btn-sm" onclick="editMemberRank(${m.user_id}, ${m.rank})" style="padding: 2px 6px; font-size: 11px;">Edit Rank</button>
+          <button class="btn btn-sm btn-danger" onclick="removeMember(${m.user_id}, '${m.username || m.user_id}')" style="padding: 2px 6px; font-size: 11px; background: #ea4335; color: white;">Remove</button>
+        `;
+        
+        row.appendChild(memberInfo);
+        row.appendChild(actions);
         list.appendChild(row);
       }
 
@@ -1761,6 +1798,155 @@
     } catch {}
     return n.type || 'Notification';
   }
+
+  // ======================
+  // Group Management Functions
+  // ======================
+
+  function showEditGroupModal(field) {
+    if (!state.currentGroup) return;
+    
+    state.editingGroupField = field;
+    $('editGroupName').value = state.currentGroup.name;
+    $('editGroupDesc').value = state.currentGroup.description || '';
+    
+    // Show/hide fields based on what we're editing
+    if (field === 'name') {
+      $('editGroupName').style.display = 'block';
+      $('editGroupDesc').style.display = 'none';
+      $('editGroupName').parentElement.style.display = 'block';
+      $('editGroupDesc').parentElement.style.display = 'none';
+    } else if (field === 'description') {
+      $('editGroupName').style.display = 'none';
+      $('editGroupDesc').style.display = 'block';
+      $('editGroupName').parentElement.style.display = 'none';
+      $('editGroupDesc').parentElement.style.display = 'block';
+    }
+    
+    $('editGroupModal').classList.add('show');
+    $('editGroupModal').style.display = 'flex';
+  }
+
+  function hideEditGroupModal() {
+    $('editGroupModal').classList.remove('show');
+    $('editGroupModal').style.display = 'none';
+    state.editingGroupField = null;
+  }
+
+  async function saveEditGroup() {
+    try {
+      if (!state.currentGroup) return;
+      
+      const groupId = state.currentGroup.id;
+      let updateData = {};
+      
+      if (state.editingGroupField === 'name') {
+        const name = $('editGroupName').value.trim();
+        if (!name) { alert('Group name is required'); return; }
+        updateData.name = name;
+        updateData.description = state.currentGroup.description || ''; // Keep current description
+      } else if (state.editingGroupField === 'description') {
+        updateData.name = state.currentGroup.name; // Keep current name
+        updateData.description = $('editGroupDesc').value.trim();
+      }
+      
+      const response = await api(`/api/groups/${groupId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updateData)
+      });
+      
+      console.log('Group updated successfully:', response);
+      
+      // Update local state
+      if (updateData.name) state.currentGroup.name = updateData.name;
+      if (updateData.description !== undefined) state.currentGroup.description = updateData.description;
+      
+      // Update UI
+      $('groupDetailsName').textContent = state.currentGroup.name;
+      $('groupDetailsDesc').textContent = state.currentGroup.description || '';
+      
+      hideEditGroupModal();
+      await loadGroups(); // Refresh groups list
+    } catch (e) {
+      console.error('Failed to update group:', e);
+      alert('Failed to update group: ' + e.message);
+    }
+  }
+
+  async function deleteGroup() {
+    if (!state.currentGroup) return;
+    
+    const confirmed = confirm(`Are you sure you want to delete the group "${state.currentGroup.name}"? This will also delete all group appointments and remove all members. This action cannot be undone.`);
+    if (!confirmed) return;
+    
+    try {
+      const groupId = state.currentGroup.id;
+      await api(`/api/groups/${groupId}`, {
+        method: 'DELETE'
+      });
+      
+      console.log('Group deleted successfully');
+      
+      // Close modals and refresh
+      $('groupDetailsModal').classList.remove('show');
+      $('groupDetailsModal').style.display = 'none';
+      state.currentGroup = null;
+      
+      await loadGroups();
+      updateEventGroupSelect();
+      alert('Group deleted successfully');
+    } catch (e) {
+      console.error('Failed to delete group:', e);
+      alert('Failed to delete group: ' + e.message);
+    }
+  }
+
+  async function editMemberRank(userId, currentRank) {
+    const newRank = prompt(`Enter new rank for this member (current: ${currentRank}):`, currentRank);
+    if (newRank === null) return; // User cancelled
+    
+    const rank = Number(newRank);
+    if (Number.isNaN(rank) || rank <= 0) {
+      alert('Rank must be a positive number');
+      return;
+    }
+    
+    try {
+      const groupId = state.currentGroup.id;
+      await api(`/api/groups/${groupId}/members/${userId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ rank })
+      });
+      
+      console.log('Member rank updated successfully');
+      await openGroupDetails(groupId); // Refresh group details
+    } catch (e) {
+      console.error('Failed to update member rank:', e);
+      alert('Failed to update member rank: ' + e.message);
+    }
+  }
+
+  async function removeMember(userId, username) {
+    const confirmed = confirm(`Are you sure you want to remove @${username} from this group? This will also remove them from all group appointments.`);
+    if (!confirmed) return;
+    
+    try {
+      const groupId = state.currentGroup.id;
+      await api(`/api/groups/${groupId}/members/${userId}`, {
+        method: 'DELETE'
+      });
+      
+      console.log('Member removed successfully');
+      await openGroupDetails(groupId); // Refresh group details
+    } catch (e) {
+      console.error('Failed to remove member:', e);
+      alert('Failed to remove member: ' + e.message);
+    }
+  }
+
+  // Make functions globally available for onclick handlers
+  window.editMemberRank = editMemberRank;
+  window.removeMember = removeMember;
 
   // Initialize the app
   init();

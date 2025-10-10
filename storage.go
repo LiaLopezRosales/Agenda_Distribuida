@@ -236,6 +236,97 @@ func (s *Storage) GetGroupByID(id int64) (*Group, error) {
 	return &g, nil
 }
 
+// UpdateGroup updates group information
+func (s *Storage) UpdateGroup(g *Group) error {
+	now := time.Now()
+	_, err := s.db.Exec(`UPDATE groups 
+		SET name=?, description=?, updated_at=?
+		WHERE id=?`,
+		g.Name, g.Description, now, g.ID)
+	if err != nil {
+		return err
+	}
+	g.UpdatedAt = now
+	return nil
+}
+
+// DeleteGroup deletes a group and all its members
+func (s *Storage) DeleteGroup(groupID int64) error {
+	// Start transaction to ensure atomicity
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete group members first
+	_, err = tx.Exec(`DELETE FROM group_members WHERE group_id=?`, groupID)
+	if err != nil {
+		return err
+	}
+
+	// Delete group appointments and participants
+	_, err = tx.Exec(`DELETE FROM participants WHERE appointment_id IN (SELECT id FROM appointments WHERE group_id=?)`, groupID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(`DELETE FROM appointments WHERE group_id=?`, groupID)
+	if err != nil {
+		return err
+	}
+
+	// Delete the group
+	_, err = tx.Exec(`DELETE FROM groups WHERE id=?`, groupID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// UpdateGroupMember updates a member's rank
+func (s *Storage) UpdateGroupMember(groupID, userID int64, rank int) error {
+	_, err := s.db.Exec(`UPDATE group_members 
+		SET rank=?
+		WHERE group_id=? AND user_id=?`,
+		rank, groupID, userID)
+	return err
+}
+
+// RemoveGroupMember removes a member from a group
+func (s *Storage) RemoveGroupMember(groupID, userID int64) error {
+	// Start transaction to ensure atomicity
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Remove from group members first
+	result, err := tx.Exec(`DELETE FROM group_members WHERE group_id=? AND user_id=?`, groupID, userID)
+	if err != nil {
+		return err
+	}
+
+	// Check if any rows were affected
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("member not found in group")
+	}
+
+	// Remove from all group appointments
+	_, err = tx.Exec(`DELETE FROM participants WHERE user_id=? AND appointment_id IN (SELECT id FROM appointments WHERE group_id=?)`, userID, groupID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 // List all groups the user belongs to
 func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	rows, err := s.db.Query(`

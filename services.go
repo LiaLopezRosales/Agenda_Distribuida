@@ -98,6 +98,55 @@ func (s *groupService) CreateGroup(ownerID int64, name, description string) (*Gr
 	return g, nil
 }
 
+// UpdateGroup updates group information
+func (s *groupService) UpdateGroup(ownerID int64, groupID int64, name, description string) (*Group, error) {
+	// Verify ownership
+	group, err := s.groups.GetGroupByID(groupID)
+	if err != nil {
+		return nil, err
+	}
+	if group.CreatorID != ownerID {
+		return nil, fmt.Errorf("unauthorized: only group creator can update")
+	}
+
+	// Update only provided fields
+	if name != "" {
+		group.Name = name
+	}
+	if description != "" || name != "" { // Allow empty description if explicitly updating
+		group.Description = description
+	}
+
+	if err := s.groups.UpdateGroup(group); err != nil {
+		return nil, err
+	}
+
+	// Note: Event publishing would be handled by the event bus if available
+
+	return group, nil
+}
+
+// DeleteGroup deletes a group and all its members
+func (s *groupService) DeleteGroup(ownerID int64, groupID int64) error {
+	// Verify ownership
+	group, err := s.groups.GetGroupByID(groupID)
+	if err != nil {
+		return err
+	}
+	if group.CreatorID != ownerID {
+		return fmt.Errorf("unauthorized: only group creator can delete")
+	}
+
+	// Delete group (this will cascade to members and appointments)
+	if err := s.groups.DeleteGroup(groupID); err != nil {
+		return err
+	}
+
+	// Note: Event publishing would be handled by the event bus if available
+
+	return nil
+}
+
 // 🔥 MODIFICADO: añadir miembro con verificación de jerarquía
 func (s *groupService) AddMember(actorID, groupID, userID int64, rank int) error {
 	actorRank, err := s.groups.GetMemberRank(groupID, actorID)
@@ -118,6 +167,64 @@ func (s *groupService) AddMember(actorID, groupID, userID int64, rank int) error
 		Payload:   payload,
 		CreatedAt: time.Now(),
 	})
+}
+
+// UpdateMember updates a member's rank
+func (s *groupService) UpdateMember(actorID, groupID, userID int64, rank int) error {
+	// Verify actor has permission (must be higher rank)
+	actorRank, err := s.groups.GetMemberRank(groupID, actorID)
+	if err != nil {
+		return ErrUnauthorized
+	}
+
+	// Get target member's current rank
+	targetRank, err := s.groups.GetMemberRank(groupID, userID)
+	if err != nil {
+		return fmt.Errorf("member not found")
+	}
+
+	// Actor must have higher rank than target
+	if actorRank <= targetRank {
+		return fmt.Errorf("unauthorized: insufficient rank to modify this member")
+	}
+
+	// Update member rank
+	if err := s.groups.UpdateGroupMember(groupID, userID, rank); err != nil {
+		return err
+	}
+
+	// Note: Event publishing would be handled by the event bus if available
+
+	return nil
+}
+
+// RemoveMember removes a member from a group
+func (s *groupService) RemoveMember(actorID, groupID, userID int64) error {
+	// Verify actor has permission (must be higher rank)
+	actorRank, err := s.groups.GetMemberRank(groupID, actorID)
+	if err != nil {
+		return ErrUnauthorized
+	}
+
+	// Get target member's current rank
+	targetRank, err := s.groups.GetMemberRank(groupID, userID)
+	if err != nil {
+		return fmt.Errorf("member not found")
+	}
+
+	// Actor must have higher rank than target
+	if actorRank <= targetRank {
+		return fmt.Errorf("unauthorized: insufficient rank to remove this member")
+	}
+
+	// Remove member (this will also remove from all group appointments)
+	if err := s.groups.RemoveGroupMember(groupID, userID); err != nil {
+		return err
+	}
+
+	// Note: Event publishing would be handled by the event bus if available
+
+	return nil
 }
 
 // appointmentService enforces conflicts, privacy, and hierarchy rules.
