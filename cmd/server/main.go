@@ -23,8 +23,8 @@ func main() {
 	agenda := ad.NewAgendaService(storage, storage)
 	notes := ad.NewNotificationService(storage)
 
-	// Pass storage as both UserRepository and GroupRepository (7th parameter)
-	api := ad.NewAPI(auth, groups, apps, agenda, notes, storage, storage)
+	// Pass storage as UserRepository, GroupRepository, and AppointmentRepository
+	api := ad.NewAPI(auth, groups, apps, agenda, notes, storage, storage, storage)
 	r := api.Router()
 
 	// Serve static UI under /ui/

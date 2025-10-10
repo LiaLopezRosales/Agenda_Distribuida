@@ -1993,7 +1993,9 @@
       if (notification.type === 'invite' && payload.appointment_id) {
         // Load appointment details
         try {
-          const appointment = await api(`/api/appointments/${payload.appointment_id}`);
+          const response = await api(`/api/appointments/${payload.appointment_id}`);
+          const { appointment, participants } = response;
+          
           if (appointment) {
             $('appointmentDetails').innerHTML = `
               <div style="margin-bottom: 8px;"><strong>Title:</strong> ${escapeHtml(appointment.title)}</div>
@@ -2003,7 +2005,32 @@
               <div><strong>Privacy:</strong> ${appointment.privacy}</div>
             `;
             appointmentDetailsSection.style.display = 'block';
-            invitationActionsSection.style.display = 'block';
+            
+            // Get current user's participant status
+            const myParticipation = participants.find(p => p.user_id === state.user.id);
+            const myStatus = myParticipation ? myParticipation.status : null;
+            
+            // Show/hide action buttons based on status
+            const statusSection = $('invitationStatusSection');
+            const statusMessage = $('invitationStatusMessage');
+            
+            if (myStatus === 'pending') {
+              invitationActionsSection.style.display = 'block';
+              statusSection.style.display = 'none';
+            } else {
+              invitationActionsSection.style.display = 'none';
+              statusSection.style.display = 'block';
+              
+              if (myStatus === 'auto') {
+                statusMessage.textContent = 'This invitation was automatically accepted (lower rank member)';
+              } else if (myStatus === 'accepted') {
+                statusMessage.textContent = 'You have already accepted this invitation';
+              } else if (myStatus === 'declined') {
+                statusMessage.textContent = 'You have declined this invitation';
+              } else {
+                statusSection.style.display = 'none';
+              }
+            }
           }
         } catch (e) {
           console.error('Failed to load appointment details:', e);

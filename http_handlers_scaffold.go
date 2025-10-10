@@ -25,7 +25,8 @@ type API struct {
 	agenda     AgendaService
 	notes      NotificationService
 	users      UserRepository
-	groupsRepo GroupRepository // Add direct access to group repository
+	groupsRepo GroupRepository       // Add direct access to group repository
+	appsRepo   AppointmentRepository // Add direct access to appointment repository
 }
 
 // NewAPI builds a router backed by services. Implementation details
@@ -38,6 +39,7 @@ func NewAPI(
 	notes NotificationService,
 	users UserRepository,
 	groupsRepo GroupRepository, // Add group repository parameter
+	appsRepo AppointmentRepository, // Add appointment repository parameter
 ) *API {
 	r := mux.NewRouter()
 	api := &API{
@@ -49,6 +51,7 @@ func NewAPI(
 		notes:      notes,
 		users:      users,
 		groupsRepo: groupsRepo, // Store group repository
+		appsRepo:   appsRepo,   // Store appointment repository
 	}
 
 	// Public
@@ -99,6 +102,7 @@ func NewAPI(
 	protected.HandleFunc("/notifications/{id}/read", api.handleMarkNotificationRead()).Methods("POST")
 	protected.HandleFunc("/appointments/{appointmentID}/accept", api.handleAcceptInvitation()).Methods("POST")
 	protected.HandleFunc("/appointments/{appointmentID}/reject", api.handleRejectInvitation()).Methods("POST")
+	protected.HandleFunc("/appointments/{appointmentID}/my-status", api.handleGetMyParticipationStatus()).Methods("GET")
 	// NEW endpoints used by UI
 	protected.HandleFunc("/me", api.handleMe()).Methods("GET")
 	protected.HandleFunc("/groups", api.handleListMyGroups()).Methods("GET")
@@ -858,5 +862,34 @@ func (a *API) handleRejectInvitation() http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "rejected"})
+	}
+}
+
+// handleGetMyParticipationStatus handles GET /api/appointments/{appointmentID}/my-status
+func (a *API) handleGetMyParticipationStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := GetUserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		vars := mux.Vars(r)
+		appointmentID := parseID(vars["appointmentID"])
+		if appointmentID == 0 {
+			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
+			return
+		}
+
+		participant, err := a.appsRepo.GetParticipantByAppointmentAndUser(appointmentID, userID)
+		if err != nil {
+			http.Error(w, "not a participant", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": participant.Status,
+		})
 	}
 }
