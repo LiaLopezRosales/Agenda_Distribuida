@@ -1894,11 +1894,18 @@
           <div class="form-group">
             <label class="form-label" for="groupName">Name *</label>
             <input type="text" class="form-input" id="groupName" required>
-      </div>
+          </div>
           <div class="form-group">
             <label class="form-label" for="groupDesc">Description</label>
             <input type="text" class="form-input" id="groupDesc">
-    </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="groupType">Group Type *</label>
+            <select class="form-input" id="groupType" required>
+              <option value="hierarchical">Hierarchical (Members have different ranks)</option>
+              <option value="non_hierarchical">Non-Hierarchical (All members have equal rank)</option>
+            </select>
+          </div>
         </form>
       </div>
       <div class="modal-footer">
@@ -1931,6 +1938,10 @@
           <div id="groupDetailsDesc" style="font-size:14px;color:#5f6368;"></div>
         </div>
         <div class="form-group">
+          <label class="form-label">Group Type</label>
+          <div id="groupDetailsType" style="font-size:14px;color:#1a73e8;font-weight:500;"></div>
+        </div>
+        <div class="form-group">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <label class="form-label">Members</label>
             <button class="btn btn-sm btn-danger" id="deleteGroupBtn" style="padding: 4px 8px; font-size: 12px; background: #ea4335; color: white;">Delete Group</button>
@@ -1941,7 +1952,7 @@
           <label class="form-label">Add Member</label>
           <div class="form-row" style="grid-template-columns: 2fr 1fr;">
             <input type="text" class="form-input" id="newMemberUsername" placeholder="Username">
-            <input type="number" class="form-input" id="newMemberRank" placeholder="Rank">
+            <input type="number" class="form-input" id="newMemberRank" placeholder="Rank" style="display: none;">
           </div>
           <button class="btn btn-primary" id="addMemberBtn" style="margin-top:8px;">Add</button>
         </div>
@@ -2036,6 +2047,12 @@
         <div class="form-group">
           <label class="form-label">Date</label>
           <div id="notificationDate" style="font-size:14px;color:#5f6368;"></div>
+        </div>
+        <div class="form-group" id="additionalNotificationDetails" style="display: none;">
+          <label class="form-label">Additional Details</label>
+          <div style="border: 1px solid #dadce0; border-radius: 4px; padding: 12px; background: #f8f9fa;">
+            <!-- Additional notification details will be loaded here -->
+          </div>
         </div>
         <div class="form-group" id="appointmentDetailsSection" style="display: none;">
           <label class="form-label">Appointment Details</label>
@@ -2167,16 +2184,16 @@
       </div>
       <div class="modal-footer">
         <div style="display: flex; justify-content: space-between; width: 100%;">
-          <div>
+      <div>
             <button class="btn btn-danger" id="deleteEventBtn" style="background: #ea4335; color: white; border-color: #ea4335; display: none;">
               Delete Event
             </button>
-          </div>
-          <div>
+      </div>
+      <div>
             <button class="btn" id="editEventBtn" style="margin-right: 8px; display: none;">Edit Event</button>
             <button class="btn" id="closeEventDetails">Close</button>
-          </div>
-        </div>
+      </div>
+    </div>
       </div>
     </div>
   </div>
@@ -2249,4 +2266,4 @@
 
   <script src="app.js"></script>
 </body>
-</html>
+</html> 

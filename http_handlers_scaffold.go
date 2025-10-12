@@ -197,8 +197,9 @@ func (a *API) handleLogin() http.HandlerFunc {
 
 func (a *API) handleCreateGroup() http.HandlerFunc {
 	type req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
+		Name        string    `json:"name"`
+		Description string    `json:"description"`
+		GroupType   GroupType `json:"group_type,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in req
@@ -208,18 +209,31 @@ func (a *API) handleCreateGroup() http.HandlerFunc {
 		}
 		uid, _ := GetUserIDFromContext(r.Context())
 		user, _ := a.users.GetUserByID(uid)
+
+		// Validar tipo de grupo o asignar por defecto
+		gt := in.GroupType
+		if gt == "" {
+			gt = "non_hierarchical"
+		}
+
 		g := &Group{
 			Name:            in.Name,
 			Description:     in.Description,
 			CreatorID:       user.ID,
 			CreatorUserName: user.Username,
+			GroupType:       GroupType(gt), // ✅ guardar correctamente
 		}
+
 		if err := a.groupsRepo.CreateGroup(g); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Añadir como miembro con mayor rango
-		_ = a.groupsRepo.AddGroupMember(g.ID, user.ID, 10, nil)
+		if gt == "hierarchical" {
+			_ = a.groupsRepo.AddGroupMember(g.ID, user.ID, 10, nil)
+		} else {
+			_ = a.groupsRepo.AddGroupMember(g.ID, user.ID, 0, nil)
+		}
+
 		json.NewEncoder(w).Encode(g)
 	}
 }
@@ -241,7 +255,7 @@ func (a *API) handleAddMember() http.HandlerFunc {
 			http.Error(w, "Username is required", http.StatusBadRequest)
 			return
 		}
-		if in.Rank <= 0 {
+		if in.Rank < 0 {
 			http.Error(w, "Rank must be a positive number", http.StatusBadRequest)
 			return
 		}
@@ -770,7 +784,7 @@ func (a *API) handleUpdateMember() http.HandlerFunc {
 		}
 
 		// Validate input
-		if in.Rank <= 0 {
+		if in.Rank < 0 {
 			http.Error(w, "Rank must be a positive number", http.StatusBadRequest)
 			return
 		}

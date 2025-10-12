@@ -25,19 +25,19 @@
     console.log('[API] Request:', path, opts);
     return fetch(path, { ...opts, headers })
       .then(async (r) => {
-        const text = await r.text();
-        let body;
-        try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+      const text = await r.text();
+      let body;
+      try { body = text ? JSON.parse(text) : null; } catch { body = text; }
         // Log response
         console.log('[API] Response:', path, 'Status:', r.status, 'Body:', body);
-        if (!r.ok) { throw new Error(typeof body === 'string' ? body : JSON.stringify(body)); }
-        return body;
+      if (!r.ok) { throw new Error(typeof body === 'string' ? body : JSON.stringify(body)); }
+      return body;
       })
       .catch((err) => {
         // Log network/fetch errors
         console.error('[API] Fetch/network error:', path, err, err.stack);
         throw err;
-      });
+    });
   };
 
   // DOM helpers
@@ -1027,10 +1027,13 @@
       item.className = 'calendar-item';
       item.dataset.groupId = group.id;
       
+      const groupTypeIcon = group.group_type === 'hierarchical' ? '👑' : '👥';
+      const groupTypeText = group.group_type === 'hierarchical' ? 'H' : 'NH';
+      
       item.innerHTML = `
         <div class="calendar-color" style="background: #34a853;"></div>
         <span class="calendar-name">${group.name}</span>
-        <span class="calendar-count" id="groupCount${group.id}">0</span>
+        <span class="calendar-count" id="groupCount${group.id}" title="${groupTypeIcon} ${group.group_type}">${groupTypeText}</span>
       `;
       
       item.addEventListener('click', () => openGroupDetails(group.id));
@@ -1076,11 +1079,13 @@
 
       const name = $('groupName').value.trim();
       const description = $('groupDesc').value.trim();
+      const groupType = $('groupType').value;
       if (!name) { alert('Group name is required'); return; }
-
+      if (!groupType) { alert('Group type is required'); return; }
+      console.log('Sending group type:', groupType);
       const response = await api('/api/groups', {
         method: 'POST',
-        body: JSON.stringify({ name, description })
+        body: JSON.stringify({ name, description, group_type: groupType })
       });
 
       console.log('Group created successfully:', response);
@@ -1139,6 +1144,22 @@
       $('groupDetailsTitle').textContent = group.name;
       $('groupDetailsName').textContent = group.name;
       $('groupDetailsDesc').textContent = group.description || '';
+      
+      // Show group type
+      const groupTypeElement = document.getElementById('groupDetailsType');
+      if (groupTypeElement) {
+        groupTypeElement.textContent = group.group_type === 'hierarchical' ? 'Hierarchical' : 'Non-Hierarchical';
+      }
+      
+      // Show/hide rank field based on group type
+      const rankField = $('newMemberRank');
+      if (group.group_type === 'hierarchical') {
+        rankField.style.display = 'block';
+        rankField.placeholder = 'Rank';
+      } else {
+        rankField.style.display = 'none';
+        rankField.value = '0'; // Set default rank for non-hierarchical groups
+      }
 
       const list = $('groupMembersList');
       list.innerHTML = '';
@@ -1180,7 +1201,12 @@
 
           console.log('DEBUG username:', username, 'rank:', rank);
           if (!username) { alert('Username is required'); return; }
-          if (Number.isNaN(rank) || rank <= 0) { alert('Rank must be a positive number'); return; }
+          
+          // For non-hierarchical groups, rank is automatically set to 0
+          // For hierarchical groups, validate the rank
+          if (state.currentGroup && state.currentGroup.group_type === 'hierarchical') {
+            if (Number.isNaN(rank) || rank < 0) { alert('Rank must be a positive number'); return; }
+          }
 
           const response = await api(`/api/groups/${groupId}/members`, {
             method: 'POST',
@@ -1190,6 +1216,11 @@
           console.log('Member added successfully:', response);
           $('newMemberUsername').value = '';
           $('newMemberRank').value = '';
+          
+          // Reset rank field visibility based on group type
+          if (state.currentGroup && state.currentGroup.group_type === 'non_hierarchical') {
+            $('newMemberRank').style.display = 'none';
+          }
 
           await openGroupDetails(groupId);
         } catch (e) {
@@ -1821,7 +1852,13 @@
     // Try to use payload JSON title if present; fallback to type
     try {
       const payload = n.payload ? JSON.parse(n.payload) : null;
-      if (payload && payload.title) return payload.title;
+      if (payload && payload.title) {
+        // For group events, show group name and creator info
+        if (payload.group_name && payload.created_by_username) {
+          return `${payload.title} (${payload.group_name} - by @${payload.created_by_username})`;
+        }
+        return payload.title;
+      }
     } catch {}
     return n.type || 'Notification';
   }
@@ -1933,7 +1970,7 @@
     if (newRank === null) return; // User cancelled
     
     const rank = Number(newRank);
-    if (Number.isNaN(rank) || rank <= 0) {
+    if (Number.isNaN(rank) || rank < 0) {
       alert('Rank must be a positive number');
       return;
     }
@@ -1995,6 +2032,48 @@
       $('notificationType').textContent = getNotificationTypeLabel(notification.type);
       $('notificationMessage').textContent = getNotificationMessage(notification, payload);
       $('notificationDate').textContent = formatDateTime(notification.created_at);
+      
+      // Show additional details from payload if available
+      const additionalDetails = $('additionalNotificationDetails');
+      if (additionalDetails) {
+        let detailsHtml = '';
+        
+        // Show group information if available
+        if (payload.group_name) {
+          detailsHtml += `<div style="margin-bottom: 8px;"><strong>Group:</strong> ${escapeHtml(payload.group_name)}</div>`;
+        }
+        
+        // Show creator information if available
+        if (payload.created_by_username) {
+          detailsHtml += `<div style="margin-bottom: 8px;"><strong>Created by:</strong> @${escapeHtml(payload.created_by_username)}`;
+          if (payload.created_by_display_name) {
+            detailsHtml += ` (${escapeHtml(payload.created_by_display_name)})`;
+          }
+          detailsHtml += `</div>`;
+        }
+        
+        // Show event time information if available
+        if (payload.start && payload.end) {
+          detailsHtml += `<div style="margin-bottom: 8px;"><strong>Time:</strong> ${formatDateTime(payload.start)} - ${formatDateTime(payload.end)}</div>`;
+        }
+        
+        // Show privacy information if available
+        if (payload.privacy) {
+          detailsHtml += `<div style="margin-bottom: 8px;"><strong>Privacy:</strong> ${payload.privacy}</div>`;
+        }
+        
+        // Show status information if available
+        if (payload.status) {
+          detailsHtml += `<div style="margin-bottom: 8px;"><strong>Status:</strong> ${payload.status}</div>`;
+        }
+        
+        if (detailsHtml) {
+          additionalDetails.innerHTML = detailsHtml;
+          additionalDetails.style.display = 'block';
+        } else {
+          additionalDetails.style.display = 'none';
+        }
+      }
       
       // Show/hide sections based on notification type
       const appointmentDetailsSection = $('appointmentDetailsSection');
@@ -2144,18 +2223,38 @@
   function getNotificationMessage(notification, payload) {
     switch (notification.type) {
       case 'invite':
+        if (payload.group_name && payload.created_by_username) {
+          return `You have been invited to "${payload.title}" in group "${payload.group_name}" by @${payload.created_by_username}`;
+        } else if (payload.title) {
+          return `You have been invited to "${payload.title}"`;
+        }
         return `You have been invited to an event`;
       case 'created':
+        if (payload.title) {
+          return `A new event "${payload.title}" has been created`;
+        }
         return `A new event has been created`;
       case 'accepted':
       case 'invitation_accepted':
+        if (payload.title && payload.user_username) {
+          return `@${payload.user_username} has accepted your invitation to "${payload.title}"`;
+        }
         return `Your invitation has been accepted`;
       case 'declined':
       case 'invitation_declined':
+        if (payload.title && payload.user_username) {
+          return `@${payload.user_username} has declined your invitation to "${payload.title}"`;
+        }
         return `Your invitation has been declined`;
       case 'group_created':
+        if (payload.group_name && payload.created_by_username) {
+          return `Group "${payload.group_name}" has been created by @${payload.created_by_username}`;
+        }
         return `A new group has been created`;
       case 'group_invite':
+        if (payload.group_name && payload.added_by_username) {
+          return `You have been invited to join group "${payload.group_name}" by @${payload.added_by_username}`;
+        }
         return `You have been invited to join a group`;
       default:
         return `Notification: ${notification.type}`;
@@ -2257,4 +2356,4 @@
 
   // Initialize the app
   init();
-})();
+})(); 

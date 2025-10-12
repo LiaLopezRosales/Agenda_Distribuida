@@ -95,8 +95,9 @@ func handleLogin(storage *Storage) http.HandlerFunc {
 // ======================
 
 type createGroupRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	GroupType   GroupType `json:"group_type,omitempty"`
 }
 
 func handleCreateGroup(storage *Storage) http.HandlerFunc {
@@ -113,11 +114,19 @@ func handleCreateGroup(storage *Storage) http.HandlerFunc {
 			return
 		}
 
+		// Determinar el tipo de grupo (por defecto jerárquico)
+		groupType := req.GroupType
+		print("group type:", groupType)
+		if groupType == "" {
+			groupType = GroupTypeHierarchical
+		}
+
 		group := &Group{
 			Name:            req.Name,
 			Description:     req.Description,
 			CreatorID:       user.ID,
 			CreatorUserName: user.Username,
+			GroupType:       groupType,
 		}
 		if err := storage.CreateGroup(group); err != nil {
 			respondError(w, http.StatusInternalServerError, "Could not create group")
@@ -172,7 +181,7 @@ func handleAddGroupMember(storage *Storage) http.HandlerFunc {
 			respondError(w, http.StatusBadRequest, "Username is required")
 			return
 		}
-		if req.Rank <= 0 {
+		if req.Rank < 0 {
 			respondError(w, http.StatusBadRequest, "Rank must be a positive number")
 			return
 		}
@@ -190,17 +199,32 @@ func handleAddGroupMember(storage *Storage) http.HandlerFunc {
 			return
 		}
 
-		if err := storage.AddGroupMember(groupID, user.ID, req.Rank, nil); err != nil {
+		// Obtener información del grupo para determinar el tipo
+		group, err := storage.GetGroupByID(groupID)
+		if err != nil {
+			respondError(w, http.StatusNotFound, "Group not found")
+			return
+		}
+
+		// Determinar el rango según el tipo de grupo
+		rank := req.Rank
+		if group.GroupType == GroupTypeNonHierarchical {
+			// En grupos sin jerarquía, todos los miembros tienen rango 0
+			rank = 0
+		}
+
+		if err := storage.AddGroupMember(groupID, user.ID, rank, nil); err != nil {
 			respondError(w, http.StatusInternalServerError, "Could not add member")
 			return
 		}
 
 		respondJSON(w, http.StatusCreated, map[string]interface{}{
-			"status":   "member added",
-			"group_id": groupID,
-			"user_id":  user.ID,
-			"username": user.Username,
-			"rank":     req.Rank,
+			"status":     "member added",
+			"group_id":   groupID,
+			"user_id":    user.ID,
+			"username":   user.Username,
+			"rank":       rank,
+			"group_type": group.GroupType,
 		})
 	}
 }

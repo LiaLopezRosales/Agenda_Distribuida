@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS groups (
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     creator_id INTEGER,
-    creator_username TEXT
+    creator_username TEXT,
+    group_type TEXT NOT NULL DEFAULT 'hierarchical'
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
@@ -194,8 +195,8 @@ func (s *Storage) UpdatePassword(userID int64, newPasswordHash string) error {
 // ====================
 func (s *Storage) CreateGroup(g *Group) error {
 	now := time.Now()
-	res, err := s.db.Exec(`INSERT INTO groups(name, description, created_at, updated_at, creator_id, creator_username) VALUES(?,?,?,?,?,?)`,
-		g.Name, g.Description, now, now, g.CreatorID, g.CreatorUserName)
+	res, err := s.db.Exec(`INSERT INTO groups(name, description, created_at, updated_at, creator_id, creator_username, group_type) VALUES(?,?,?,?,?,?,?)`,
+		g.Name, g.Description, now, now, g.CreatorID, g.CreatorUserName, g.GroupType)
 	if err != nil {
 		return err
 	}
@@ -260,9 +261,9 @@ func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
 
 // Fetch group by ID
 func (s *Storage) GetGroupByID(id int64) (*Group, error) {
-	row := s.db.QueryRow(`SELECT id,name,description,created_at,updated_at,creator_id,creator_username FROM groups WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id,name,description,created_at,updated_at,creator_id,creator_username,group_type FROM groups WHERE id=?`, id)
 	var g Group
-	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName); err != nil {
+	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName, &g.GroupType); err != nil {
 		return nil, err
 	}
 	return &g, nil
@@ -383,7 +384,7 @@ func (s *Storage) GetParticipantByAppointmentAndUser(appointmentID, userID int64
 // List all groups the user belongs to
 func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	rows, err := s.db.Query(`
-		SELECT g.id, g.name, g.description, g.created_at, g.updated_at, g.creator_id, g.creator_username
+		SELECT g.id, g.name, g.description, g.created_at, g.updated_at, g.creator_id, g.creator_username, g.group_type
 		FROM groups g
 		JOIN group_members gm ON gm.group_id = g.id
 		WHERE gm.user_id = ?
@@ -396,7 +397,7 @@ func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	var groups []Group
 	for rows.Next() {
 		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName, &g.GroupType); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -524,8 +525,8 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 	a.CreatedAt = now
 	a.UpdatedAt = now
 
-	// Rank del creador
-	creatorRank, err := s.GetMemberRank(*a.GroupID, a.OwnerID)
+	// Obtener información del grupo para determinar el tipo
+	group, err := s.GetGroupByID(*a.GroupID)
 	if err != nil {
 		rollback()
 		return nil, err
@@ -541,10 +542,28 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 	participants := []Participant{}
 	for _, m := range members {
 		var status ApptStatus
-		if m.Rank > creatorRank {
-			status = StatusPending
+
+		// Determinar el estado según el tipo de grupo
+		if group.GroupType == GroupTypeNonHierarchical {
+			// En grupos sin jerarquía, todos los eventos requieren aprobación
+			// excepto para el creador que se auto-acepta
+			if m.UserID == a.OwnerID {
+				status = StatusAuto
+			} else {
+				status = StatusPending
+			}
 		} else {
-			status = StatusAuto
+			// En grupos jerárquicos, usar la lógica existente
+			creatorRank, err := s.GetMemberRank(*a.GroupID, a.OwnerID)
+			if err != nil {
+				rollback()
+				return nil, err
+			}
+			if m.Rank > creatorRank {
+				status = StatusPending
+			} else {
+				status = StatusAuto
+			}
 		}
 		res2, err := tx.Exec(`INSERT INTO participants(appointment_id,user_id,status,is_optional,created_at,updated_at)
 			VALUES(?,?,?,?,?,?)`,
@@ -565,8 +584,23 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 		}
 		participants = append(participants, p)
 
-		// Notificación inicial
-		payload := fmt.Sprintf(`{"appointment_id": %d, "status": "%s"}`, apptID, status)
+		// Obtener información del creador para enriquecer la notificación
+		var creatorUsername, creatorDisplayName string
+		if creator, err := s.GetUserByID(a.OwnerID); err == nil && creator != nil {
+			creatorUsername = creator.Username
+			creatorDisplayName = creator.DisplayName
+		}
+
+		// Obtener información del grupo
+		var groupName string
+		if group, err := s.GetGroupByID(*a.GroupID); err == nil && group != nil {
+			groupName = group.Name
+		}
+
+		// Notificación inicial con payload enriquecido
+		payload := fmt.Sprintf(`{"appointment_id":%d,"title":"%s","description":"%s","start":"%s","end":"%s","group_id":%d,"group_name":"%s","created_by_id":%d,"created_by_username":"%s","created_by_display_name":"%s","status":"%s","privacy":"%s"}`,
+			apptID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339),
+			*a.GroupID, groupName, a.OwnerID, creatorUsername, creatorDisplayName, status, a.Privacy)
 		if _, err := tx.Exec(`INSERT INTO notifications(user_id,type,payload,created_at)
 			VALUES(?,?,?,?)`, m.UserID, "invite", payload, now); err != nil {
 			rollback()

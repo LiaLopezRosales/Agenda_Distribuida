@@ -21,6 +21,13 @@ const (
 	StatusAuto     ApptStatus = "auto"     // insertado automáticamente (según jerarquía)
 )
 
+type GroupType string
+
+const (
+	GroupTypeHierarchical    GroupType = "hierarchical"     // grupos con jerarquía
+	GroupTypeNonHierarchical GroupType = "non_hierarchical" // grupos sin jerarquía
+)
+
 // ---------- core models ----------
 type User struct {
 	ID           int64     `json:"id" db:"id"`
@@ -40,6 +47,7 @@ type Group struct {
 	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
 	CreatorID       int64     `json:"creator_id" db:"creator_id"`
 	CreatorUserName string    `json:"creator_username,omitempty" db:"creator_username"`
+	GroupType       GroupType `json:"group_type" db:"group_type"` // "hierarchical" or "non_hierarchical"
 }
 
 // GroupMember con Rank para jerarquías dinámicas
