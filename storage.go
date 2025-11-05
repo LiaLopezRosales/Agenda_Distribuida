@@ -117,6 +117,33 @@ CREATE TABLE IF NOT EXISTS events (
 	origin_node TEXT,
 	version INTEGER
 );
+
+-- Raft / Consenso: log replicado y metadatos persistentes
+CREATE TABLE IF NOT EXISTS raft_log (
+    term INTEGER NOT NULL,
+    idx INTEGER NOT NULL,
+    event_id TEXT UNIQUE,
+    aggregate TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    op TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    ts DATETIME NOT NULL,
+    PRIMARY KEY(term, idx)
+);
+
+CREATE INDEX IF NOT EXISTS raft_log_idx ON raft_log(idx);
+
+CREATE TABLE IF NOT EXISTS raft_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Inicialización básica de claves si no existen
+INSERT OR IGNORE INTO raft_meta(key, value) VALUES
+    ('currentTerm', '0'),
+    ('votedFor', ''),
+    ('commitIndex', '0'),
+    ('lastApplied', '0');
 `
 	_, err := s.db.Exec(schema)
 	return err

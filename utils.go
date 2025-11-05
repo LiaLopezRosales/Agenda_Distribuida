@@ -3,6 +3,9 @@ package agendadistribuida
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"time"
@@ -57,4 +60,20 @@ func parseTimeRange(r *http.Request) (time.Time, time.Time) {
 		}
 	}
 	return start, end
+}
+
+// -----------------------------
+// HMAC helpers S2S
+// -----------------------------
+
+func computeHMACSHA256Hex(body []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func verifyHMACSHA256Hex(body []byte, secret, hexSig string) bool {
+	expect := computeHMACSHA256Hex(body, secret)
+	// constant time compare
+	return hmac.Equal([]byte(expect), []byte(hexSig))
 }

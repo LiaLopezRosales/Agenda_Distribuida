@@ -98,6 +98,30 @@ type Notification struct {
 	CreatedAt time.Time  `json:"created_at" db:"created_at"`
 }
 
+// ----------------- Raft / Consenso -----------------
+
+// LogEntry representa una entrada del log replicado (consenso)
+// Solo se aplica al estado (SQLite) cuando está comprometida por mayoría.
+type LogEntry struct {
+	Term        int64     `json:"term" db:"term"`
+	Index       int64     `json:"index" db:"idx"`
+	EventID     string    `json:"event_id" db:"event_id"`
+	Aggregate   string    `json:"aggregate" db:"aggregate"`
+	AggregateID string    `json:"aggregate_id" db:"aggregate_id"`
+	Op          string    `json:"op" db:"op"`
+	Payload     string    `json:"payload" db:"payload"` // JSON serializado del cambio de dominio
+	Timestamp   time.Time `json:"ts" db:"ts"`
+}
+
+// RaftState contiene el estado persistente y volátil mínimo para el nodo
+// necesario para reinicios y continuidad del consenso.
+type RaftState struct {
+	CurrentTerm int64  `json:"current_term"`
+	VotedFor    string `json:"voted_for"`
+	CommitIndex int64  `json:"commit_index"`
+	LastApplied int64  `json:"last_applied"`
+}
+
 type Event struct {
 	ID         int64     `json:"id" db:"id"`
 	Entity     string    `json:"entity" db:"entity"` // "appointment","group",...
