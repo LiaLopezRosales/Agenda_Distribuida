@@ -63,6 +63,54 @@ type EventBus interface {
 	Publish(e Event) error
 }
 
+// ----------------- Consenso / Raft-like -----------------
+
+type AppendEntriesRequest struct {
+	Term         int64      `json:"term"`
+	LeaderID     string     `json:"leader_id"`
+	PrevLogIndex int64      `json:"prev_log_index"`
+	PrevLogTerm  int64      `json:"prev_log_term"`
+	Entries      []LogEntry `json:"entries"`
+	LeaderCommit int64      `json:"leader_commit"`
+}
+
+type AppendEntriesResponse struct {
+	Term       int64 `json:"term"`
+	Success    bool  `json:"success"`
+	MatchIndex int64 `json:"match_index"`
+}
+
+type RequestVoteRequest struct {
+	Term         int64  `json:"term"`
+	CandidateID  string `json:"candidate_id"`
+	LastLogIndex int64  `json:"last_log_index"`
+	LastLogTerm  int64  `json:"last_log_term"`
+}
+
+type RequestVoteResponse struct {
+	Term        int64 `json:"term"`
+	VoteGranted bool  `json:"vote_granted"`
+}
+
+type Consensus interface {
+	NodeID() string
+	IsLeader() bool
+	LeaderID() string
+	Propose(entry LogEntry) error
+	HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesResponse, error)
+	HandleRequestVote(req RequestVoteRequest) (RequestVoteResponse, error)
+	Start() error
+	Stop() error
+}
+
+type PeerStore interface {
+	LocalID() string
+	ListPeers() []string
+	SetLeader(id string)
+	GetLeader() string
+	ResolveAddr(id string) string
+}
+
 // Services define business use-cases. They compose repositories and infrastructure.
 
 type AuthService interface {
@@ -91,6 +139,8 @@ type AppointmentService interface {
 	RejectInvitation(userID int64, appointmentID int64) error
 	GetAppointmentByID(appointmentID int64) (*Appointment, error)
 	GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error)
+	// Wiring de consenso (permitir inyectarlo desde main)
+	SetConsensus(c Consensus)
 }
 
 type AgendaService interface {

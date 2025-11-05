@@ -365,6 +365,7 @@ type appointmentService struct {
 	notes  NotificationRepository
 	events EventBus
 	repl   ReplicationService
+	cons   Consensus
 }
 
 func NewAppointmentService(
@@ -375,6 +376,11 @@ func NewAppointmentService(
 	repl ReplicationService,
 ) AppointmentService {
 	return &appointmentService{apps: apps, groups: groups, notes: notes, events: events, repl: repl}
+}
+
+// SetConsensus allows wiring the consensus component after construction
+func (s *appointmentService) SetConsensus(c Consensus) {
+	s.cons = c
 }
 
 // 🔥 MODIFICADO: cita personal
@@ -392,17 +398,41 @@ func (s *appointmentService) CreatePersonalAppointment(ownerID int64, a Appointm
 	}
 	a.OwnerID = ownerID
 	a.Status = StatusAccepted
-	if err := s.apps.CreateAppointment(&a); err != nil {
-		return nil, err
-	}
-	// añadir owner como participante
-	p := Participant{
-		AppointmentID: a.ID,
-		UserID:        ownerID,
-		Status:        StatusAccepted,
-	}
-	if err := s.apps.AddParticipant(&p); err != nil {
-		return nil, err
+	// If consensus is wired and this node is leader, propose via log
+	if s.cons != nil && s.cons.IsLeader() {
+		entry, err := BuildEntryApptCreatePersonal(ownerID, a)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.cons.Propose(entry); err != nil {
+			return nil, err
+		}
+		// Try to retrieve the created appointment heuristically
+		// using a tight time window around now
+		windowStart := a.Start.Add(-1 * time.Second)
+		windowEnd := a.End.Add(1 * time.Second)
+		agenda, err := s.apps.GetUserAgenda(ownerID, windowStart, windowEnd)
+		if err == nil {
+			for _, cand := range agenda {
+				if cand.Title == a.Title && cand.Start.Equal(a.Start) && cand.End.Equal(a.End) {
+					a = cand
+					break
+				}
+			}
+		}
+	} else {
+		if err := s.apps.CreateAppointment(&a); err != nil {
+			return nil, err
+		}
+		// añadir owner como participante
+		p := Participant{
+			AppointmentID: a.ID,
+			UserID:        ownerID,
+			Status:        StatusAccepted,
+		}
+		if err := s.apps.AddParticipant(&p); err != nil {
+			return nil, err
+		}
 	}
 	// notificación con detalles enriquecidos
 	var ownerUsername, ownerDisplayName string
@@ -498,10 +528,20 @@ func (s *appointmentService) UpdateAppointment(ownerID int64, a Appointment) (*A
 		return nil, fmt.Errorf("time conflict with existing appointment")
 	}
 
-	// Update the appointment
+	// Update the appointment (via consensus if available)
 	a.OwnerID = ownerID // Ensure ownership is preserved
-	if err := s.apps.UpdateAppointment(&a); err != nil {
-		return nil, err
+	if s.cons != nil && s.cons.IsLeader() {
+		entry, err := BuildEntryApptUpdate(a)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.cons.Propose(entry); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.apps.UpdateAppointment(&a); err != nil {
+			return nil, err
+		}
 	}
 
 	// Emit event for replication
@@ -528,9 +568,19 @@ func (s *appointmentService) DeleteAppointment(ownerID int64, appointmentID int6
 		return fmt.Errorf("unauthorized: only appointment owner can delete")
 	}
 
-	// Delete the appointment (soft delete)
-	if err := s.apps.DeleteAppointment(appointmentID); err != nil {
-		return err
+	// Delete the appointment (via consensus if available)
+	if s.cons != nil && s.cons.IsLeader() {
+		entry, err := BuildEntryApptDelete(appointmentID)
+		if err != nil {
+			return err
+		}
+		if err := s.cons.Propose(entry); err != nil {
+			return err
+		}
+	} else {
+		if err := s.apps.DeleteAppointment(appointmentID); err != nil {
+			return err
+		}
 	}
 
 	// Emit event for replication
