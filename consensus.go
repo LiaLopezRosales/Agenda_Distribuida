@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -26,6 +27,7 @@ type ConsensusImpl struct {
 	storage *Storage
 	peers   PeerStore
 	nodeID  string
+	logger  *slog.Logger
 
 	// persistent/volatile
 	state RaftState
@@ -50,7 +52,32 @@ func NewConsensus(nodeID string, storage *Storage, peers PeerStore) *ConsensusIm
 		role:       roleFollower,
 		httpClient: &http.Client{Timeout: 1500 * time.Millisecond},
 		hmacSecret: os.Getenv("CLUSTER_HMAC_SECRET"),
+		logger:     Logger(),
 	}
+}
+
+func (c *ConsensusImpl) log(level slog.Level, msg string, attrs ...any) {
+	attrs = append(attrs, "node_id", c.nodeID)
+	switch level {
+	case slog.LevelDebug:
+		c.logger.Debug(msg, attrs...)
+	case slog.LevelWarn:
+		c.logger.Warn(msg, attrs...)
+	case slog.LevelError:
+		c.logger.Error(msg, attrs...)
+	default:
+		c.logger.Info(msg, attrs...)
+	}
+}
+
+func (c *ConsensusImpl) audit(action, message string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	if _, exists := fields["node_id"]; !exists {
+		fields["node_id"] = c.nodeID
+	}
+	RecordAudit(context.Background(), AuditLevelInfo, "consensus", action, message, fields)
 }
 
 func (c *ConsensusImpl) NodeID() string { return c.nodeID }
@@ -78,6 +105,8 @@ func (c *ConsensusImpl) Start() error {
 
 	// main loop: heartbeats/election (placeholder) and apply committed entries
 	go c.loop(ctx)
+	c.log(slog.LevelInfo, "consensus_started", "term", c.state.CurrentTerm)
+	c.audit("start", "consensus loop started", map[string]any{"term": c.state.CurrentTerm})
 	return nil
 }
 
@@ -87,6 +116,8 @@ func (c *ConsensusImpl) Stop() error {
 		c.cancel()
 	}
 	c.mu.Unlock()
+	c.log(slog.LevelInfo, "consensus_stopped")
+	c.audit("stop", "consensus loop stopped", nil)
 	return nil
 }
 
@@ -132,6 +163,7 @@ func (c *ConsensusImpl) Propose(entry LogEntry) error {
 	c.mu.RLock()
 	if c.role != roleLeader {
 		c.mu.RUnlock()
+		c.log(slog.LevelWarn, "propose_rejected_not_leader", "leader", c.peers.GetLeader())
 		return errors.New("not leader")
 	}
 	term := c.state.CurrentTerm
@@ -145,12 +177,16 @@ func (c *ConsensusImpl) Propose(entry LogEntry) error {
 	entry.Term = term
 	entry.Index = nextIdx
 	if err := c.appendLog(entry); err != nil {
+		c.log(slog.LevelError, "propose_append_failed", "err", err)
 		return err
 	}
 	// replicate to followers and wait for majority to commit
 	if err := c.replicateAndCommit(entry); err != nil {
+		c.log(slog.LevelError, "propose_replicate_failed", "err", err)
 		return err
 	}
+	c.log(slog.LevelInfo, "propose_committed", "index", entry.Index, "op", entry.Op)
+	c.audit("propose", "log entry committed", map[string]any{"index": entry.Index, "op": entry.Op})
 	return nil
 }
 
@@ -158,20 +194,53 @@ func (c *ConsensusImpl) HandleAppendEntries(req AppendEntriesRequest) (AppendEnt
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if req.Term < c.state.CurrentTerm {
+		c.log(slog.LevelDebug, "append_entries_reject_old_term", "term", req.Term)
 		return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: false, MatchIndex: c.state.LastApplied}, nil
 	}
 	// become follower on newer term and accept leader
 	if req.Term > c.state.CurrentTerm {
 		c.state.CurrentTerm = req.Term
 		_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
+		c.audit("term_update", "term advanced from append entries", map[string]any{"term": c.state.CurrentTerm})
 	}
 	c.role = roleFollower
 	c.peers.SetLeader(req.LeaderID)
+	c.log(slog.LevelDebug, "append_entries_leader_seen", "leader_id", req.LeaderID, "term", req.Term)
 
-	// TODO: validate prev log match; for now, append blindly
-	var lastIdx int64 = c.state.LastApplied
+	if req.PrevLogIndex > 0 {
+		term, err := c.logTermAt(req.PrevLogIndex)
+		if err != nil {
+			c.log(slog.LevelWarn, "append_entries_prev_lookup_failed", "err", err, "prev_index", req.PrevLogIndex)
+			return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: false, MatchIndex: c.state.LastApplied}, err
+		}
+		if term != req.PrevLogTerm {
+			_ = c.truncateLogFrom(req.PrevLogIndex)
+			if c.state.LastApplied >= req.PrevLogIndex {
+				c.state.LastApplied = req.PrevLogIndex - 1
+				if c.state.LastApplied < 0 {
+					c.state.LastApplied = 0
+				}
+				_ = c.persistMeta("lastApplied", c.state.LastApplied)
+			}
+			if c.state.CommitIndex >= req.PrevLogIndex {
+				c.state.CommitIndex = req.PrevLogIndex - 1
+				if c.state.CommitIndex < 0 {
+					c.state.CommitIndex = 0
+				}
+				_ = c.persistMeta("commitIndex", c.state.CommitIndex)
+			}
+			c.log(slog.LevelDebug, "append_entries_prev_mismatch", "expected_term", req.PrevLogTerm, "found_term", term)
+			return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: false, MatchIndex: c.state.LastApplied}, nil
+		}
+	}
+	var lastIdx int64 = req.PrevLogIndex
 	for _, e := range req.Entries {
+		if err := c.truncateLogFrom(e.Index); err != nil {
+			c.log(slog.LevelWarn, "append_entries_truncate_failed", "err", err, "index", e.Index)
+			return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: false, MatchIndex: lastIdx}, err
+		}
 		if err := c.appendLog(e); err != nil {
+			c.log(slog.LevelWarn, "append_entries_append_failed", "err", err)
 			return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: false, MatchIndex: lastIdx}, nil
 		}
 		lastIdx = e.Index
@@ -187,15 +256,30 @@ func (c *ConsensusImpl) HandleRequestVote(req RequestVoteRequest) (RequestVoteRe
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if req.Term < c.state.CurrentTerm {
+		c.log(slog.LevelDebug, "request_vote_old_term", "candidate", req.CandidateID, "term", req.Term)
 		return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, nil
 	}
 	if req.Term > c.state.CurrentTerm {
 		c.state.CurrentTerm = req.Term
 		_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
-		_ = c.persistMeta("votedFor", 0)
+		c.state.VotedFor = ""
+		_ = c.persistMetaString("votedFor", "")
 	}
-	// very permissive vote granting for bootstrap; later check log freshness
+	if c.state.VotedFor != "" && c.state.VotedFor != req.CandidateID {
+		c.log(slog.LevelDebug, "request_vote_already_voted", "candidate", req.CandidateID, "voted_for", c.state.VotedFor)
+		return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, nil
+	}
+	lastIdx, lastTerm, err := c.lastIndexTerm()
+	if err != nil {
+		return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, err
+	}
+	if lastTerm > req.LastLogTerm || (lastTerm == req.LastLogTerm && lastIdx > req.LastLogIndex) {
+		c.log(slog.LevelDebug, "request_vote_log_outdated", "candidate", req.CandidateID)
+		return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, nil
+	}
+	c.state.VotedFor = req.CandidateID
 	_ = c.persistMetaString("votedFor", req.CandidateID)
+	c.log(slog.LevelInfo, "request_vote_granted", "candidate", req.CandidateID, "term", req.Term)
 	return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: true}, nil
 }
 
@@ -254,9 +338,32 @@ func (c *ConsensusImpl) nextIndex() (int64, error) {
 }
 
 func (c *ConsensusImpl) appendLog(e LogEntry) error {
-	_, err := c.storage.db.Exec(`INSERT OR IGNORE INTO raft_log(term, idx, event_id, aggregate, aggregate_id, op, payload, ts)
+	_, err := c.storage.db.Exec(`INSERT OR REPLACE INTO raft_log(term, idx, event_id, aggregate, aggregate_id, op, payload, ts)
         VALUES(?,?,?,?,?,?,?,?)`, e.Term, e.Index, e.EventID, e.Aggregate, e.AggregateID, e.Op, e.Payload, e.Timestamp)
 	return err
+}
+
+func (c *ConsensusImpl) truncateLogFrom(idx int64) error {
+	if idx <= 0 {
+		return nil
+	}
+	_, err := c.storage.db.Exec(`DELETE FROM raft_log WHERE idx >= ?`, idx)
+	return err
+}
+
+func (c *ConsensusImpl) logTermAt(idx int64) (int64, error) {
+	if idx <= 0 {
+		return 0, nil
+	}
+	var term sql.NullInt64
+	err := c.storage.db.QueryRow(`SELECT term FROM raft_log WHERE idx=?`, idx).Scan(&term)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return term.Int64, nil
 }
 
 // small utils
@@ -309,8 +416,17 @@ func (c *ConsensusImpl) applyCommitted() error {
 			return err
 		}
 		e.Timestamp = ts
-		if err := applier(e); err != nil {
+		applied, err := c.storage.HasAppliedEvent(e.EventID)
+		if err != nil {
 			return err
+		}
+		if !applied {
+			if err := applier(e); err != nil {
+				return err
+			}
+			if err := c.storage.RecordAppliedEvent(e.EventID, e.Index); err != nil {
+				return err
+			}
 		}
 		// advance lastApplied
 		lastApplied = e.Index
@@ -359,17 +475,20 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 				return nil
 			}
 		case <-timeout:
+			c.log(slog.LevelWarn, "append_entries_timeout", "pending", pending)
 			return errors.New("append majority timeout")
 		}
 	}
 	if successes >= majority {
 		return nil
 	}
+	c.log(slog.LevelError, "append_entries_no_majority", "successes", successes, "needed", majority)
 	return errors.New("append majority failed")
 }
 
 func (c *ConsensusImpl) replicateAndCommit(entry LogEntry) error {
 	if err := c.broadcastAppendEntries(entry.Term, []LogEntry{entry}, c.state.CommitIndex); err != nil {
+		c.log(slog.LevelWarn, "replicate_failed", "err", err)
 		return err
 	}
 	c.mu.Lock()
@@ -382,6 +501,7 @@ func (c *ConsensusImpl) replicateAndCommit(entry LogEntry) error {
 }
 
 func (c *ConsensusImpl) startElection() error {
+	c.log(slog.LevelInfo, "election_started")
 	c.mu.Lock()
 	c.state.CurrentTerm++
 	term := c.state.CurrentTerm
@@ -418,9 +538,12 @@ func (c *ConsensusImpl) startElection() error {
 				c.role = roleLeader
 				c.peers.SetLeader(c.nodeID)
 				c.mu.Unlock()
+				c.log(slog.LevelInfo, "election_won", "term", term)
+				c.audit("election", "node became leader", map[string]any{"term": term})
 				return nil
 			}
 		case <-timeout:
+			c.log(slog.LevelWarn, "election_timeout")
 			return errors.New("election timeout")
 		}
 	}
@@ -429,8 +552,11 @@ func (c *ConsensusImpl) startElection() error {
 		c.role = roleLeader
 		c.peers.SetLeader(c.nodeID)
 		c.mu.Unlock()
+		c.log(slog.LevelInfo, "election_won", "term", term)
+		c.audit("election", "node became leader", map[string]any{"term": term})
 		return nil
 	}
+	c.log(slog.LevelWarn, "election_failed", "votes", votes, "needed", majority)
 	return errors.New("not enough votes")
 }
 

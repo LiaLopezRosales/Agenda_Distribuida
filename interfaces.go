@@ -59,6 +59,11 @@ type EventRepository interface {
 	AppendEvent(e *Event) error
 }
 
+type AuditRepository interface {
+	AppendAudit(entry *AuditLog) error
+	ListAuditLogs(filter AuditFilter) ([]AuditLog, error)
+}
+
 type EventBus interface {
 	Publish(e Event) error
 }

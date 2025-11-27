@@ -1,6 +1,7 @@
 package agendadistribuida
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -22,6 +23,7 @@ func StartHeartbeats(ps *EnvPeerStore, stopCh <-chan struct{}) {
 					addr := ps.ResolveAddr(id)
 					resp, err := client.Get("http://" + addr + "/raft/health")
 					if err != nil {
+						Logger().Debug("heartbeat_peer_unreachable", "peer_id", id, "err", err)
 						continue
 					}
 					var h struct {
@@ -31,7 +33,14 @@ func StartHeartbeats(ps *EnvPeerStore, stopCh <-chan struct{}) {
 					_ = json.NewDecoder(resp.Body).Decode(&h)
 					resp.Body.Close()
 					if h.IsLeader {
+						prev := ps.GetLeader()
 						ps.SetLeader(id)
+						if prev != id {
+							Logger().Info("heartbeat_leader_detected", "leader_id", id)
+							RecordAudit(context.Background(), AuditLevelInfo, "cluster", "leader_detected", "leader discovered via heartbeat", map[string]any{
+								"leader_id": id,
+							})
+						}
 						break
 					}
 				}
