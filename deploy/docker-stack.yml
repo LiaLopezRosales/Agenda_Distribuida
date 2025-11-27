@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  agenda:
+    image: agenda-distribuida:latest
+    deploy:
+      replicas: 7
+      restart_policy:
+        condition: on-failure
+      update_config:
+        order: start-first
+      placement:
+        max_replicas_per_node: 4
+        constraints:
+          - node.role == worker
+        preferences:
+          - spread: node.id
+    env_file:
+      - stack.env
+    environment:
+      NODE_ID: "agenda-{{.Task.Slot}}"
+      ADVERTISE_ADDR: "{{.Task.Name}}:8080"
+      HTTP_ADDR: ":8080"
+      DATABASE_DSN: "file:/data/agenda.db?cache=shared&_fk=1"
+      SWARM_SERVICE_NAME: "agenda"
+      SWARM_SERVICE_PORT: "8080"
+      DISCOVERY_DNS_NAME: "tasks.agenda"
+      LOG_LEVEL: "info"
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - agenda_data:/data
+    networks:
+      - agenda_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/raft/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  agenda_net:
+    driver: overlay
+    attachable: true
+
+volumes:
+  agenda_data:
+    driver: local
+
+

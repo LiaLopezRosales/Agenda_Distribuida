@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -21,6 +22,7 @@ var (
 	_ AppointmentRepository  = (*Storage)(nil)
 	_ NotificationRepository = (*Storage)(nil)
 	_ EventRepository        = (*Storage)(nil)
+	_ AuditRepository        = (*Storage)(nil)
 )
 
 // Inicializa conexión y migraciones
@@ -118,6 +120,30 @@ CREATE TABLE IF NOT EXISTS events (
 	version INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS cluster_nodes (
+    node_id TEXT PRIMARY KEY,
+    address TEXT NOT NULL,
+    source TEXT,
+    last_seen DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS cluster_nodes_last_seen_idx ON cluster_nodes(last_seen);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    component TEXT NOT NULL,
+    action TEXT NOT NULL,
+    level TEXT NOT NULL,
+    message TEXT,
+    actor_id INTEGER,
+    request_id TEXT,
+    node_id TEXT,
+    payload TEXT,
+    occurred_at DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS audit_component_idx ON audit_logs(component, action);
+
 -- Raft / Consenso: log replicado y metadatos persistentes
 CREATE TABLE IF NOT EXISTS raft_log (
     term INTEGER NOT NULL,
@@ -136,6 +162,12 @@ CREATE INDEX IF NOT EXISTS raft_log_idx ON raft_log(idx);
 CREATE TABLE IF NOT EXISTS raft_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS raft_applied (
+    event_id TEXT PRIMARY KEY,
+    idx INTEGER NOT NULL,
+    applied_at DATETIME NOT NULL
 );
 
 -- Inicialización básica de claves si no existen
@@ -805,6 +837,169 @@ func (s *Storage) AppendEvent(e *Event) error {
 	e.ID = id
 	e.CreatedAt = now
 	return nil
+}
+
+// AppendAudit stores an immutable audit record.
+func (s *Storage) AppendAudit(entry *AuditLog) error {
+	if entry == nil {
+		return errors.New("nil audit entry")
+	}
+	if entry.OccurredAt.IsZero() {
+		entry.OccurredAt = time.Now()
+	}
+	res, err := s.db.Exec(`INSERT INTO audit_logs(component, action, level, message, actor_id, request_id, node_id, payload, occurred_at)
+		VALUES(?,?,?,?,?,?,?,?,?)`,
+		entry.Component, entry.Action, entry.Level, entry.Message, entry.ActorID, entry.RequestID, entry.NodeID, entry.Payload, entry.OccurredAt)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	entry.ID = id
+	return nil
+}
+
+// ListAuditLogs returns the newest audit entries that match the provided filter.
+func (s *Storage) ListAuditLogs(filter AuditFilter) ([]AuditLog, error) {
+	query := `SELECT id, component, action, level, message, actor_id, request_id, node_id, payload, occurred_at
+		FROM audit_logs`
+	var clauses []string
+	var args []any
+	if filter.Component != "" {
+		clauses = append(clauses, "component = ?")
+		args = append(args, filter.Component)
+	}
+	if filter.Action != "" {
+		clauses = append(clauses, "action = ?")
+		args = append(args, filter.Action)
+	}
+	if filter.Level != "" {
+		clauses = append(clauses, "level = ?")
+		args = append(args, filter.Level)
+	}
+	if filter.RequestID != "" {
+		clauses = append(clauses, "request_id = ?")
+		args = append(args, filter.RequestID)
+	}
+	if !filter.Since.IsZero() {
+		clauses = append(clauses, "occurred_at >= ?")
+		args = append(args, filter.Since)
+	}
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY occurred_at DESC"
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	query += " LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []AuditLog
+	for rows.Next() {
+		var entry AuditLog
+		var actor sql.NullInt64
+		if err := rows.Scan(&entry.ID, &entry.Component, &entry.Action, &entry.Level, &entry.Message,
+			&actor, &entry.RequestID, &entry.NodeID, &entry.Payload, &entry.OccurredAt); err != nil {
+			return nil, err
+		}
+		if actor.Valid {
+			val := actor.Int64
+			entry.ActorID = &val
+		}
+		logs = append(logs, entry)
+	}
+	return logs, rows.Err()
+}
+
+// ====================
+// Raft applied tracking
+// ====================
+
+func (s *Storage) HasAppliedEvent(eventID string) (bool, error) {
+	if strings.TrimSpace(eventID) == "" {
+		return false, errors.New("empty event id")
+	}
+	var dummy int
+	err := s.db.QueryRow(`SELECT 1 FROM raft_applied WHERE event_id=?`, eventID).Scan(&dummy)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Storage) RecordAppliedEvent(eventID string, idx int64) error {
+	if strings.TrimSpace(eventID) == "" {
+		return errors.New("empty event id")
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO raft_applied(event_id, idx, applied_at) VALUES(?,?,?)`,
+		eventID, idx, time.Now())
+	return err
+}
+
+// ====================
+// Cluster Nodes
+// ====================
+
+func (s *Storage) UpsertClusterNode(node *ClusterNode) error {
+	if node == nil {
+		return errors.New("nil cluster node")
+	}
+	if node.NodeID == "" {
+		return errors.New("empty node id")
+	}
+	if node.Address == "" {
+		node.Address = node.NodeID
+	}
+	if node.LastSeen.IsZero() {
+		node.LastSeen = time.Now()
+	}
+	_, err := s.db.Exec(`INSERT INTO cluster_nodes(node_id, address, source, last_seen)
+		VALUES(?,?,?,?)
+		ON CONFLICT(node_id) DO UPDATE SET address=excluded.address, source=excluded.source, last_seen=excluded.last_seen`,
+		node.NodeID, node.Address, node.Source, node.LastSeen)
+	return err
+}
+
+func (s *Storage) RemoveClusterNode(nodeID string) error {
+	if nodeID == "" {
+		return errors.New("empty node id")
+	}
+	_, err := s.db.Exec(`DELETE FROM cluster_nodes WHERE node_id=?`, nodeID)
+	return err
+}
+
+func (s *Storage) ListClusterNodes() ([]ClusterNode, error) {
+	rows, err := s.db.Query(`SELECT node_id, address, source, last_seen FROM cluster_nodes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []ClusterNode
+	for rows.Next() {
+		var n ClusterNode
+		if err := rows.Scan(&n.NodeID, &n.Address, &n.Source, &n.LastSeen); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, nil
 }
 
 // ====================

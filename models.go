@@ -145,3 +145,35 @@ type ParticipantDetails struct {
 	Username      string     `json:"username" db:"username"`
 	DisplayName   string     `json:"display_name" db:"display_name"`
 }
+
+// ClusterNode stores discovery metadata for peer nodes.
+type ClusterNode struct {
+	NodeID   string    `json:"node_id" db:"node_id"`
+	Address  string    `json:"address" db:"address"`
+	Source   string    `json:"source" db:"source"`
+	LastSeen time.Time `json:"last_seen" db:"last_seen"`
+}
+
+// AuditLog stores immutable operational events for troubleshooting.
+type AuditLog struct {
+	ID         int64     `json:"id" db:"id"`
+	Component  string    `json:"component" db:"component"`
+	Action     string    `json:"action" db:"action"`
+	Level      string    `json:"level" db:"level"`
+	Message    string    `json:"message" db:"message"`
+	ActorID    *int64    `json:"actor_id,omitempty" db:"actor_id"`
+	RequestID  string    `json:"request_id" db:"request_id"`
+	NodeID     string    `json:"node_id" db:"node_id"`
+	Payload    string    `json:"payload" db:"payload"`
+	OccurredAt time.Time `json:"occurred_at" db:"occurred_at"`
+}
+
+// AuditFilter constrains how audit logs are fetched for observability endpoints.
+type AuditFilter struct {
+	Component string
+	Action    string
+	Level     string
+	RequestID string
+	Since     time.Time
+	Limit     int
+}

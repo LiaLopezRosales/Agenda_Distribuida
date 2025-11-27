@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -80,9 +81,10 @@ func LeaderWriteMiddleware(cons Consensus, leaderAddrResolver func(string) strin
 // --- HMAC guard ---
 
 func validateClusterHMAC(w http.ResponseWriter, r *http.Request) bool {
-	secret := os.Getenv("CLUSTER_HMAC_SECRET")
+	secret := strings.TrimSpace(os.Getenv("CLUSTER_HMAC_SECRET"))
 	if secret == "" {
-		return true // disabled if not provided
+		http.Error(w, "cluster secret not configured", http.StatusInternalServerError)
+		return false
 	}
 	sig := r.Header.Get("X-Cluster-Signature")
 	if sig == "" {
