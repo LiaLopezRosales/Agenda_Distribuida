@@ -33,3 +33,11 @@ go.work.sum
 
 #base de datos
 *.db
+
+#LaTeX
+*.aux
+*.log
+*.out
+*.fdb_latexmk
+*.fls
+*.synctex.gz

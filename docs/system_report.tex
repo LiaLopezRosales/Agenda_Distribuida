@@ -1,0 +1,364 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[spanish]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{csquotes}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\geometry{margin=2.5cm}
+
+\title{Informe Técnico de la Agenda Distribuida}
+\author{Equipo Agenda\_Distribuida}
+\date{ }
+
+\begin{document}
+\maketitle
+
+\section{Introducción}
+Este informe documenta la implementación del proyecto \emph{Agenda Distribuida}, un sistema distribuido que gestiona 
+agendas personales y grupales con tolerancia a fallos. El sistema utiliza el algoritmo de consenso Raft para mantener 
+la consistencia de los datos entre múltiples réplicas. A continuación se explican las decisiones de diseño, la 
+arquitectura implementada, los procesos internos, los mecanismos de comunicación, coordinación, nombrado, consistencia, 
+tolerancia a fallas y seguridad, basándose en el código fuente del proyecto y las pruebas realizadas con siete 
+réplicas en Docker Swarm.
+
+\section{Arquitectura del Sistema}
+El desafío principal al diseñar una agenda distribuida es lograr que múltiples servidores trabajen juntos como si 
+fueran uno solo, manteniendo los datos sincronizados y permitiendo que cualquier servidor pueda responder a las 
+peticiones de los clientes.
+
+La solución implementada es una arquitectura homogénea donde todos los contenedores ejecutan exactamente el mismo 
+programa. Esto significa que no hay servidores especializados: cualquier réplica puede convertirse en líder cuando sea 
+necesario, sin cambios en el código. Esta simplicidad facilita el despliegue y la escalabilidad.
+
+El sistema está organizado en varias capas principales:
+
+\begin{itemize}
+\item \textbf{Capa de presentación}: El servidor HTTP/REST (\texttt{http\_handlers\_scaffold.go}) y WebSocket 
+(\texttt{websocket.go}) reciben las peticiones de los usuarios y las convierten en operaciones del sistema.
+\item \textbf{Capa de lógica de negocio}: En \texttt{services.go} se implementan las reglas de negocio como la creación 
+de grupos, la gestión de agendas y el manejo de notificaciones.
+\item \textbf{Capa de consenso}: Los archivos \texttt{consensus.go}, \texttt{raft\_http.go} y \texttt{raft\_apply.go} 
+implementan el algoritmo Raft para garantizar que todas las réplicas estén de acuerdo sobre el estado del sistema.
+\item \textbf{Capa de persistencia}: \texttt{storage.go} maneja el almacenamiento en SQLite, que actúa como la base de 
+datos local de cada réplica.
+\item \textbf{Capa de descubrimiento y auditoría}: \texttt{discovery.go} y \texttt{audit.go} permiten que los nodos se 
+encuentren entre sí y registren todas las operaciones importantes.
+\end{itemize}
+
+El despliegue se realiza usando Docker Swarm con siete réplicas distribuidas en al menos dos hosts físicos. Esto 
+garantiza que si un servidor o incluso un host completo falla, el sistema continúe funcionando. Docker Swarm se 
+encarga de crear las redes virtuales, balancear las peticiones de entrada y supervisar que todos los contenedores 
+estén funcionando correctamente.
+
+\section{Organización Distribuida y Roles}
+Aunque todos los contenedores ejecutan el mismo programa, durante la operación cada uno puede tener un rol diferente 
+dentro del cluster:
+
+\begin{itemize}
+\item \textbf{Usuarios finales}: Interactúan con la interfaz web en \texttt{/ui/} y con la API REST. Sus acciones 
+quedan registradas en los logs de auditoría y se autentican mediante tokens JWT.
+\item \textbf{Nodos del cluster}: Son las réplicas del servicio. Cualquiera puede convertirse en líder Raft mediante 
+elecciones, pero solo uno lo es a la vez. Los nodos que no son líderes se llaman seguidores.
+\item \textbf{Nodos manager de Swarm}: Son los hosts que gestionan el clúster Docker. Distribuyen los contenedores 
+entre los diferentes servidores físicos y exponen los servicios al exterior.
+\item \textbf{Operadores}: Pueden consultar los logs de auditoría en \texttt{/api/admin/audit/logs} para revisar qué 
+ha ocurrido en el sistema.
+\end{itemize}
+
+\subsection{Distribución en Redes Docker}
+El sistema utiliza una red Docker overlay llamada \texttt{agenda\_net} para la comunicación entre servidores. Esta red 
+permite que los contenedores en diferentes hosts físicos se comuniquen entre sí como si estuvieran en la misma red 
+local. 
+
+Las peticiones de los clientes llegan al cluster a través del modo \emph{ingress} de Docker Swarm, que expone el 
+puerto 8080 de manera balanceada entre todas las réplicas. Internamente, todos los nodos se comunican a través de la 
+red overlay \texttt{agenda\_net}, lo que permite mantener el tráfico de consenso y descubrimiento separado del tráfico 
+de clientes.
+
+\section{Procesos y Patrones de Desempeño}
+Cada contenedor ejecuta un único proceso Go, pero internamente el programa utiliza múltiples \emph{goroutines} (hilos 
+ligeros de Go) para manejar diferentes tareas de forma concurrente:
+
+\begin{itemize}
+\item \textbf{Servidor HTTP/WebSocket}: Utiliza la librería \texttt{gorilla/mux} para manejar múltiples peticiones 
+simultáneamente. Las goroutines permiten atender cientos de conexiones WebSocket sin bloquear el servidor.
+\item \textbf{Motor Raft}: Ejecuta goroutines dedicadas para enviar heartbeats (latidos), iniciar elecciones cuando 
+el líder falla, y replicar entradas del log a los seguidores. Estas goroutines comparten información mediante mutexes 
+para evitar condiciones de carrera.
+\item \textbf{Discovery Manager}: Ejecuta tres bucles en paralelo:
+  \begin{itemize}
+  \item Un bucle que consulta DNS tradicional (útil si se necesita integración con sistemas externos).
+  \item Un bucle que consulta el DNS de Docker para descubrir las réplicas del servicio usando el nombre 
+  \texttt{tasks.agenda}.
+  \item Un bucle que intercambia información mediante peticiones HTTP con nodos semilla configurados en la variable 
+  \texttt{DISCOVERY\_SEEDS} (este mecanismo se llama \emph{gossip}).
+  \end{itemize}
+\item \textbf{Sistema de auditoría}: Mantiene una cola en memoria para registrar todos los eventos importantes antes 
+de guardarlos en la base de datos.
+\item \textbf{Base de datos SQLite}: Se ejecuta en modo \emph{journaled}, lo que garantiza que las transacciones se 
+completen de forma segura incluso si el programa se detiene inesperadamente.
+\end{itemize}
+
+El patrón de desempeño elegido es cooperativo: en lugar de usar hilos pesados del sistema operativo o procesos 
+separados, se utilizan goroutines que son muy ligeras. Esto reduce el consumo de recursos y permite que el sistema 
+escale mejor al aumentar el número de réplicas.
+
+\section{Comunicación}
+El sistema utiliza diferentes mecanismos de comunicación según quién se esté comunicando con quién:
+
+\subsection{Comunicación Cliente-Servidor}
+Los clientes (navegadores web, aplicaciones móviles, etc.) se comunican con el servidor mediante:
+
+\begin{itemize}
+\item \textbf{REST/JSON}: Todas las operaciones CRUD (crear, leer, actualizar, eliminar) se exponen como endpoints 
+HTTP que aceptan y devuelven JSON. Por ejemplo, \texttt{POST /api/appointments} crea una nueva cita.
+\item \textbf{WebSockets}: Para las notificaciones en tiempo real, se utiliza WebSocket. Cuando un usuario acepta una 
+invitación, todos los usuarios conectados reciben la notificación inmediatamente sin necesidad de recargar la página.
+\item \textbf{Autenticación JWT}: Toda petición autenticada debe incluir un token JWT en el header 
+\texttt{Authorization: Bearer <token>}. Este token se genera cuando el usuario inicia sesión y contiene información 
+sobre su identidad.
+\end{itemize}
+
+\subsection{Comunicación Servidor-Servidor}
+Los nodos del cluster se comunican entre sí para:
+
+\begin{itemize}
+\item \textbf{Consenso Raft}: Los mensajes de Raft (solicitudes de voto, réplicas de log) se envían mediante HTTP 
+POST a los endpoints \texttt{/raft/request-vote} y \texttt{/raft/append-entries}.
+\item \textbf{Descubrimiento}: Los nodos intercambian información sobre quién está en el cluster mediante peticiones 
+HTTP a \texttt{/cluster/join} y \texttt{/cluster/nodes}.
+\item \textbf{Seguridad HMAC}: Todas las peticiones entre nodos deben incluir un header \texttt{X-Cluster-Signature} 
+que contiene un hash HMAC-SHA256 del cuerpo de la petición. El secreto compartido está en la variable de entorno 
+\texttt{CLUSTER\_HMAC\_SECRET}. Esto garantiza que solo los nodos autorizados puedan participar en el cluster.
+\end{itemize}
+
+\subsection{Comunicación Interna}
+Dentro de cada nodo, los diferentes componentes se comunican mediante interfaces bien definidas declaradas en 
+\texttt{interfaces.go}. Por ejemplo, los servicios de negocio no acceden directamente a la base de datos, sino que 
+utilizan repositorios. Esto permite cambiar la implementación de almacenamiento sin modificar la lógica de negocio.
+
+\section{Coordinación}
+La coordinación entre nodos se logra mediante una implementación del algoritmo de consenso Raft. El objetivo es 
+garantizar que todos los nodos estén de acuerdo sobre qué cambios se han aplicado y en qué orden.
+
+\subsection{Flujo de una Operación}
+Cuando un usuario quiere crear una cita:
+
+\begin{enumerate}
+\item La petición llega a cualquier nodo del cluster. Si el nodo no es el líder, redirige la petición al líder (código 
+307).
+\item El líder crea una entrada en su log local con un número de índice único y un término (número de ronda de 
+elección actual).
+\item El líder envía esta entrada a todos los seguidores mediante \texttt{AppendEntries}.
+\item Cada seguidor verifica que la entrada anterior coincide con lo que tiene. Si hay diferencias, trunca su log 
+desde ese punto.
+\item Cuando la mayoría de los nodos (al menos 4 de 7) confirman que tienen la entrada, el líder la marca como 
+\emph{comprometida}.
+\item Solo entonces se aplica la operación a la base de datos SQLite en todos los nodos.
+\end{enumerate}
+
+\subsection{Mecanismos de Prevención de Divergencias}
+Para evitar que los nodos tengan datos diferentes:
+
+\begin{itemize}
+\item Los seguidores comparan el término y el índice antes de aceptar nuevas entradas. Si detectan discrepancias, 
+descartan sus cambios y siguen al líder.
+\item El middleware HTTP \texttt{LeaderWriteMiddleware} garantiza que solo el líder procese operaciones de escritura. 
+Si un seguidor recibe una escritura, la redirige al líder.
+\item La tabla \texttt{raft\_applied} registra qué eventos ya se aplicaron, evitando aplicar el mismo cambio dos veces 
+después de un reinicio.
+\item Todos los eventos importantes se registran en \texttt{audit\_logs} para poder reconstruir qué ocurrió si hay 
+problemas.
+\end{itemize}
+
+\section{Nombrado y Localización}
+El sistema necesita identificar de manera única a cada réplica y saber cómo contactarla para comunicarse con ella.
+
+\subsection{Identificación de Nodos}
+Cada contenedor recibe un identificador único mediante la variable de entorno \texttt{NODE\_ID}, que en Docker Swarm 
+se configura como \texttt{agenda-\{\{.Task.Slot\}\}} (por ejemplo, \texttt{agenda-1}, \texttt{agenda-2}, etc.). Este 
+identificador se usa en los logs y auditorías para saber qué nodo realizó cada acción.
+
+La dirección de contacto se configura mediante \texttt{ADVERTISE\_ADDR}, que normalmente es 
+\texttt{\{\{.Task.Name\}\}:8080}. Esta dirección es la que otros nodos utilizan para comunicarse con esta réplica.
+
+\subsection{Descubrimiento de Nodos}
+El \texttt{DiscoveryManager} mantiene actualizada la tabla \texttt{cluster\_nodes} en la base de datos combinando tres 
+fuentes:
+
+\begin{itemize}
+\item \textbf{Docker DNS}: Consulta periódicamente \texttt{tasks.agenda} para obtener las direcciones IP de todas las 
+réplicas del servicio.
+\item \textbf{Nodos semilla}: Si se configura \texttt{DISCOVERY\_SEEDS}, envía periódicamente peticiones HTTP a esos 
+nodos para anunciar su existencia y recibir información sobre otros nodos (protocolo gossip).
+\item \textbf{DNS tradicional}: Opcionalmente, puede consultar un nombre DNS configurado en 
+\texttt{DISCOVERY\_DNS\_NAME}.
+\end{itemize}
+
+Cada entrada en \texttt{cluster\_nodes} almacena el identificador del nodo, su dirección, la fuente de descubrimiento 
+y cuándo fue visto por última vez. Si un nodo no se ha visto en más de 2 minutos, se considera desconectado y se 
+retira del \texttt{PeerStore}, que es la lista de nodos que Raft utiliza para comunicarse.
+
+\subsection{Localización de Datos}
+Como cada réplica mantiene una copia completa de la base de datos \texttt{agenda.db}, localizar un dato es equivalente 
+a contactar cualquier nodo del cluster. El campo \texttt{origin\_node} en las tablas de citas indica en qué nodo se 
+creó originalmente el dato, lo cual es útil para diagnóstico y posibles optimizaciones futuras.
+
+\section{Consistencia y Replicación}
+El sistema garantiza consistencia fuerte (linearizable) entre todas las réplicas mediante el modelo de log replicado 
+de Raft.
+
+\subsection{El Log como Fuente de Verdad}
+El log de Raft (almacenado en la tabla \texttt{raft\_log}) es la única fuente de verdad. Hasta que una entrada no esté 
+comprometida por la mayoría de los nodos, no se considera válida. Esto significa que aunque una entrada esté en el log 
+local, no se aplica a la base de datos hasta que la mayoría la confirme.
+
+\subsection{Proceso de Replicación}
+La replicación ocurre en dos etapas:
+
+\begin{enumerate}
+\item \textbf{Replicación del log}: El líder envía cada nueva entrada a los otros seis nodos. Cada entrada contiene 
+metadatos (término, índice, identificador único de evento) y el comando a ejecutar (por ejemplo, "crear cita con estos 
+datos"). El líder espera confirmaciones de al menos cuatro réplicas antes de marcar la entrada como comprometida.
+\item \textbf{Aplicación a la base de datos}: Una vez comprometida, cada nodo aplica el comando en su base de datos 
+SQLite. De esta forma, las siete copias del dataset permanecen equivalentes.
+\end{enumerate}
+
+\subsection{Rastreo de Versiones}
+Para poder diagnosticar problemas y detectar conflictos, las tablas incluyen campos como:
+\begin{itemize}
+\item \texttt{version}: Incrementa cada vez que se modifica un registro.
+\item \texttt{origin\_node}: Indica en qué nodo se creó originalmente.
+\item \texttt{raft\_applied}: Tabla que registra qué eventos ya se materializaron en la base de datos.
+\end{itemize}
+
+\subsection{Recuperación tras Reinicios}
+Cuando un nodo se reinicia, lee su estado desde \texttt{raft\_meta}, que contiene:
+\begin{itemize}
+\item \texttt{currentTerm}: El término actual (número de elecciones que ha visto).
+\item \texttt{commitIndex}: Hasta qué índice del log se ha comprometido.
+\item \texttt{lastApplied}: Hasta qué índice se ha aplicado a la base de datos.
+\end{itemize}
+
+Con esta información, el nodo puede continuar desde donde se quedó, aplicando las entradas faltantes del log.
+
+\section{Tolerancia a Fallas}
+El sistema está diseñado para continuar funcionando incluso cuando algunos componentes fallan.
+
+\subsection{Tolerancia en la Capa de Orquestación}
+Docker Swarm mantiene el servicio con siete réplicas y limita a cuatro el número máximo de réplicas por nodo físico. 
+Esto significa que incluso si un host completo desaparece, el cluster mantiene la mayoría necesaria para operar (al 
+menos cuatro nodos de siete). Swarm automáticamente reprograma los contenedores que fallan en otros hosts disponibles.
+
+\subsection{Tolerancia en la Capa de Consenso}
+Raft garantiza que cualquier subconjunto de cuatro nodos mantenga el quorum (mayoría). Esto significa:
+
+\begin{itemize}
+\item Si el líder falla, los temporizadores de elección (configurados entre 1,2 y 1,8 segundos de forma aleatoria para 
+evitar elecciones simultáneas) disparan una nueva elección rápidamente.
+\item El nodo que gana la elección se convierte en el nuevo líder y comienza a enviar heartbeats a los seguidores.
+\item El middleware de escritura se ajusta automáticamente para redirigir las peticiones al nuevo líder.
+\end{itemize}
+
+\subsection{Detección de Nodos Caídos}
+El \texttt{DiscoveryManager} detecta nodos inactivos mediante el campo \texttt{last\_seen}. Si un nodo no se ha visto 
+en más de 2 minutos, se retira automáticamente del \texttt{PeerStore} para evitar intentos de comunicación inútiles 
+que retrasarían las operaciones.
+
+\subsection{Reincorporación de Nodos}
+Cuando un nodo que había fallado se reintegra:
+
+\begin{enumerate}
+\item Sincroniza la tabla \texttt{cluster\_nodes} para conocer los demás nodos del cluster.
+\item Descarga las entradas faltantes de su log mediante peticiones \texttt{AppendEntries} al líder.
+\item Aplica las entradas comprometidas que aún no había aplicado a su base de datos.
+\item Registra en \texttt{raft\_applied} qué eventos ya procesó para evitar duplicados.
+\item Continúa operando normalmente.
+\end{enumerate}
+
+Todos estos eventos quedan registrados en \texttt{audit\_logs}, permitiendo que los operadores reconstruyan 
+exactamente qué ocurrió durante un failover o la reincorporación de un nodo.
+
+\section{Seguridad}
+El diseño de seguridad abarca tres aspectos principales: la comunicación, la arquitectura interna y la 
+autenticación/autorización.
+
+\subsection{Seguridad en la Comunicación}
+\begin{itemize}
+\item \textbf{Firma HMAC}: Todas las peticiones RPC entre nodos se firman con HMAC-SHA256 usando el secreto compartido 
+\texttt{CLUSTER\_HMAC\_SECRET}. Esto garantiza:
+  \begin{itemize}
+  \item Autenticidad: El mensaje proviene de un nodo autorizado.
+  \item Integridad: El mensaje no ha sido modificado en tránsito.
+  \end{itemize}
+  Si un nodo no autorizado intenta participar, sus peticiones serán rechazadas por falta de firma válida.
+
+\item \textbf{TLS opcional}: Si se configuran \texttt{TLS\_CERT\_FILE} y \texttt{TLS\_KEY\_FILE}, el servidor activa 
+TLS (HTTPS) para todas las conexiones. Esto protege contra:
+  \begin{itemize}
+  \item Interceptación de tráfico (ataques man-in-the-middle).
+  \item Observación de datos sensibles en la red.
+  \end{itemize}
+\end{itemize}
+
+\subsection{Seguridad en el Diseño}
+\begin{itemize}
+\item \textbf{Separación de responsabilidades}: La capa HTTP no tiene acceso directo a la base de datos. Todas las 
+operaciones pasan por los servicios de negocio y luego por los repositorios. Esto previene inyecciones SQL desde las 
+peticiones HTTP.
+
+\item \textbf{Registro de auditoría}: Todas las operaciones críticas se registran en \texttt{audit\_logs}, incluyendo 
+quién realizó la acción, cuándo, y desde qué nodo. Esto permite:
+  \begin{itemize}
+  \item Reconstruir qué ocurrió ante un incidente.
+  \item Detectar acciones no autorizadas.
+  \item Cumplir con requisitos de cumplimiento normativo.
+  \end{itemize}
+
+\item \textbf{Acceso restringido a auditoría}: El endpoint \texttt{/api/admin/audit/logs} requiere además del JWT del 
+usuario, un header adicional \texttt{X-Audit-Token} con el valor configurado en \texttt{AUDIT\_API\_TOKEN}. Solo los 
+operadores autorizados pueden consultar estos logs.
+\end{itemize}
+
+\subsection{Autenticación y Autorización}
+\begin{itemize}
+\item \textbf{JWT para usuarios}: Cada usuario obtiene un token JWT al iniciar sesión. Este token contiene su 
+identificador y nombre de usuario, y está firmado para que no pueda ser falsificado. El middleware valida el token en 
+cada petición protegida.
+
+\item \textbf{Verificación de permisos}: Las acciones sensibles (crear grupos, añadir miembros, etc.) verifican 
+explícitamente que el usuario tenga los permisos adecuados consultando los repositorios. Por ejemplo:
+  \begin{itemize}
+  \item Solo el creador de un grupo puede eliminarlo.
+  \item Solo usuarios con rango superior pueden modificar miembros de grupos jerárquicos.
+  \item Solo el dueño de una cita puede modificarla o eliminarla.
+  \end{itemize}
+\end{itemize}
+
+En conjunto, estos mecanismos reducen significativamente la superficie de ataque del sistema y proporcionan garantías 
+de que las acciones realizadas en el cluster pueden ser rastreadas y auditadas.
+
+\section{Conclusiones}
+La implementación del proyecto Agenda Distribuida demuestra un sistema funcional con consenso distribuido, registro de 
+auditoría completo, descubrimiento automático de nodos y despliegue reproducible en Docker Swarm. 
+
+Las pruebas realizadas con múltiples contenedores confirman que la arquitectura es capaz de:
+\begin{itemize}
+\item Tolerar fallas parciales (nodos individuales o incluso hosts completos).
+\item Mantener la consistencia de los datos mediante el algoritmo Raft.
+\item Escalar horizontalmente añadiendo más réplicas.
+\item Proporcionar observabilidad suficiente para diagnosticar problemas y auditar operaciones.
+\end{itemize}
+
+El sistema cumple con los requisitos del curso: implementa toma de decisiones distribuidas mediante Raft, no depende 
+de una solución centralizada, y proporciona mecanismos de observabilidad y auditoría que permiten reproducir el estado 
+del sistema y diagnosticar errores.
+
+Los posibles trabajos futuros incluyen: completar escenarios de despliegue multi-host, implementar mecanismos de 
+snapshotting para optimizar la recuperación ante fallas prolongadas, y añadir más operaciones al log de Raft 
+(actualmente solo las citas personales pasan por consenso).
+
+\end{document}
+
