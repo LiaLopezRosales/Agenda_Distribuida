@@ -115,7 +115,7 @@ Los clientes (navegadores web, aplicaciones móviles, etc.) se comunican con el 
 \item \textbf{REST/JSON}: Todas las operaciones CRUD (crear, leer, actualizar, eliminar) se exponen como endpoints 
 HTTP que aceptan y devuelven JSON. Por ejemplo, \texttt{POST /api/appointments} crea una nueva cita.
 \item \textbf{WebSockets}: Para las notificaciones en tiempo real, se utiliza WebSocket. Cuando un usuario acepta una 
-invitación, todos los usuarios conectados reciben la notificación inmediatamente sin necesidad de recargar la página.
+invitación, todos los usuarios conectados reciben la notificación aunque necesitan recargar la página para verla.
 \item \textbf{Autenticación JWT}: Toda petición autenticada debe incluir un token JWT en el header 
 \texttt{Authorization: Bearer <token>}. Este token se genera cuando el usuario inicia sesión y contiene información 
 sobre su identidad.
@@ -351,10 +351,6 @@ Las pruebas realizadas con múltiples contenedores confirman que la arquitectura
 \item Escalar horizontalmente añadiendo más réplicas.
 \item Proporcionar observabilidad suficiente para diagnosticar problemas y auditar operaciones.
 \end{itemize}
-
-El sistema cumple con los requisitos del curso: implementa toma de decisiones distribuidas mediante Raft, no depende 
-de una solución centralizada, y proporciona mecanismos de observabilidad y auditoría que permiten reproducir el estado 
-del sistema y diagnosticar errores.
 
 Los posibles trabajos futuros incluyen: completar escenarios de despliegue multi-host, implementar mecanismos de 
 snapshotting para optimizar la recuperación ante fallas prolongadas, y añadir más operaciones al log de Raft 
