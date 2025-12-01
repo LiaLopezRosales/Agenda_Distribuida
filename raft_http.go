@@ -63,8 +63,15 @@ func LeaderWriteMiddleware(cons Consensus, leaderAddrResolver func(string) strin
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Only redirect mutating methods under /api
-			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPatch {
+			// Only redirect mutating methods under /api; never touch internal control
+			// endpoints such as /raft/*, /cluster/*, /ws or /ui.
+			path := r.URL.Path
+			if !strings.HasPrefix(path, "/api/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if r.Method == http.MethodPost || r.Method == http.MethodPut ||
+				r.Method == http.MethodDelete || r.Method == http.MethodPatch {
 				leaderID := cons.LeaderID()
 				if leaderID != "" {
 					addr := leaderAddrResolver(leaderID)

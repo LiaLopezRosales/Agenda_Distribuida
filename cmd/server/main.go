@@ -103,7 +103,7 @@ func main() {
 	} else {
 		log.Printf("listening on %s over HTTP (set TLS_CERT_FILE/TLS_KEY_FILE for TLS)", addr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Fatal(err)
+		log.Fatal(err)
 		}
 	}
 }
