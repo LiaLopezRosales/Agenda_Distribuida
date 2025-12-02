@@ -34,3 +34,4 @@ Each node should export:
 These dual strategies satisfy the requirement for Docker DNS discovery plus a second method based on gossip/seed registries.
 
 
+
