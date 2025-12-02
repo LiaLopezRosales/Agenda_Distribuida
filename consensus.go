@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,7 +35,9 @@ type ConsensusImpl struct {
 	role  role
 
 	// background
-	cancel context.CancelFunc
+	cancel             context.CancelFunc
+	resetElectionTimer chan struct{} // channel to reset election timer
+	heartbeatFailures  int           // consecutive heartbeat failures (leader demotion)
 
 	// apply callback to mutate the state machine (SQLite)
 	applier func(LogEntry) error
@@ -46,13 +49,14 @@ type ConsensusImpl struct {
 
 func NewConsensus(nodeID string, storage *Storage, peers PeerStore) *ConsensusImpl {
 	return &ConsensusImpl{
-		storage:    storage,
-		peers:      peers,
-		nodeID:     nodeID,
-		role:       roleFollower,
-		httpClient: &http.Client{Timeout: 1500 * time.Millisecond},
-		hmacSecret: os.Getenv("CLUSTER_HMAC_SECRET"),
-		logger:     Logger(),
+		storage:            storage,
+		peers:              peers,
+		nodeID:             nodeID,
+		role:               roleFollower,
+		httpClient:         &http.Client{Timeout: 5 * time.Second},
+		hmacSecret:         os.Getenv("CLUSTER_HMAC_SECRET"),
+		logger:             Logger(),
+		resetElectionTimer: make(chan struct{}, 1),
 	}
 }
 
@@ -122,7 +126,7 @@ func (c *ConsensusImpl) Stop() error {
 }
 
 func (c *ConsensusImpl) loop(ctx context.Context) {
-	hb := time.NewTicker(500 * time.Millisecond)
+	hb := time.NewTicker(1 * time.Second) // Increased heartbeat interval for stability
 	elect := time.NewTicker(c.electionTimeout())
 	defer hb.Stop()
 	defer elect.Stop()
@@ -138,7 +142,22 @@ func (c *ConsensusImpl) loop(ctx context.Context) {
 			commit := c.state.CommitIndex
 			c.mu.RUnlock()
 			if isLeader {
-				_ = c.broadcastAppendEntries(term, nil, commit)
+				err := c.broadcastAppendEntries(term, nil, commit)
+				c.mu.Lock()
+				if err != nil {
+					c.heartbeatFailures++
+					// If we fail to reach majority 3 times in a row, demote ourselves
+					if c.heartbeatFailures >= 3 {
+						c.log(slog.LevelWarn, "leader_demoted_no_majority", "failures", c.heartbeatFailures)
+						c.role = roleFollower
+						c.peers.SetLeader("")
+						c.heartbeatFailures = 0
+						c.audit("demotion", "leader demoted due to repeated heartbeat failures", map[string]any{"failures": c.heartbeatFailures})
+					}
+				} else {
+					c.heartbeatFailures = 0 // Reset on success
+				}
+				c.mu.Unlock()
 			}
 			_ = c.applyCommitted()
 		case <-elect.C:
@@ -150,13 +169,17 @@ func (c *ConsensusImpl) loop(ctx context.Context) {
 				_ = c.startElection()
 			}
 			elect.Reset(c.electionTimeout())
+		case <-c.resetElectionTimer:
+			// Reset election timer when receiving AppendEntries from leader
+			elect.Reset(c.electionTimeout())
 		}
 	}
 }
 
 func (c *ConsensusImpl) electionTimeout() time.Duration {
-	// 1200-1800ms randomized
-	return 1200*time.Millisecond + time.Duration(time.Now().UnixNano()%600_000_000)
+	// 5-7 seconds randomized (should be 5-10x heartbeat interval)
+	// This prevents premature elections due to network latency
+	return 5*time.Second + time.Duration(time.Now().UnixNano()%2_000_000_000)
 }
 
 func (c *ConsensusImpl) Propose(entry LogEntry) error {
@@ -193,19 +216,50 @@ func (c *ConsensusImpl) Propose(entry LogEntry) error {
 func (c *ConsensusImpl) HandleAppendEntries(req AppendEntriesRequest) (AppendEntriesResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Reject AppendEntries from older terms
 	if req.Term < c.state.CurrentTerm {
 		c.log(slog.LevelDebug, "append_entries_reject_old_term", "term", req.Term)
 		return AppendEntriesResponse{Term: c.state.CurrentTerm, Success: false, MatchIndex: c.state.LastApplied}, nil
 	}
-	// become follower on newer term and accept leader
+
+	// If we receive AppendEntries from a higher term, become follower
+	wasLeader := c.role == roleLeader
 	if req.Term > c.state.CurrentTerm {
 		c.state.CurrentTerm = req.Term
 		_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
-		c.audit("term_update", "term advanced from append entries", map[string]any{"term": c.state.CurrentTerm})
+		c.role = roleFollower
+		c.peers.SetLeader(req.LeaderID)
+		c.heartbeatFailures = 0 // Reset failure counter
+		if wasLeader {
+			c.log(slog.LevelWarn, "leader_demoted_higher_term", "leader_id", req.LeaderID, "term", req.Term)
+			c.audit("demotion", "leader demoted by higher term", map[string]any{"new_leader": req.LeaderID, "term": req.Term})
+		} else {
+			c.log(slog.LevelDebug, "append_entries_leader_seen", "leader_id", req.LeaderID, "term", req.Term)
+		}
+	} else if req.Term == c.state.CurrentTerm {
+		// Same term: if we're leader and receive from another leader, demote ourselves (split-brain)
+		if wasLeader && req.LeaderID != c.nodeID {
+			c.role = roleFollower
+			c.peers.SetLeader(req.LeaderID)
+			c.heartbeatFailures = 0
+			c.log(slog.LevelWarn, "leader_demoted_same_term", "leader_id", req.LeaderID, "term", req.Term)
+			c.audit("demotion", "leader demoted by same-term leader", map[string]any{"new_leader": req.LeaderID, "term": req.Term})
+		} else if !wasLeader {
+			// We're a follower, accept this leader
+			c.peers.SetLeader(req.LeaderID)
+		}
 	}
-	c.role = roleFollower
-	c.peers.SetLeader(req.LeaderID)
-	c.log(slog.LevelDebug, "append_entries_leader_seen", "leader_id", req.LeaderID, "term", req.Term)
+
+	// Reset election timer when receiving valid AppendEntries from leader (not from ourselves)
+	// This is critical to prevent unnecessary elections
+	if req.LeaderID != c.nodeID && c.role != roleLeader {
+		select {
+		case c.resetElectionTimer <- struct{}{}:
+		default:
+			// Channel full, skip (non-blocking)
+		}
+	}
 
 	if req.PrevLogIndex > 0 {
 		term, err := c.logTermAt(req.PrevLogIndex)
@@ -453,22 +507,51 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 	payload, _ := json.Marshal(req)
 	successes := 1 // leader counts self
 	peers := c.peers.ListPeers()
-	ch := make(chan bool, len(peers))
+	totalNodes := len(peers) + 1 // Include self in total count
+	type result struct {
+		success bool
+		term    int64
+	}
+	ch := make(chan result, len(peers))
 	for _, id := range peers {
 		if id == c.nodeID {
 			continue
 		}
 		go func(pid string) {
-			ok := c.postJSON("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
-			ch <- ok
+			respBody, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
+			if err != nil {
+				ch <- result{success: false, term: 0}
+				return
+			}
+			var resp AppendEntriesResponse
+			if err := json.Unmarshal(respBody, &resp); err != nil {
+				ch <- result{success: false, term: 0}
+				return
+			}
+			// If follower has higher term, we need to become follower
+			if resp.Term > term {
+				c.mu.Lock()
+				if resp.Term > c.state.CurrentTerm {
+					c.state.CurrentTerm = resp.Term
+					_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
+					c.role = roleFollower
+					c.peers.SetLeader("")
+					c.log(slog.LevelWarn, "leader_demoted_higher_term", "follower_term", resp.Term, "our_term", term)
+					c.audit("demotion", "leader demoted due to higher term from follower", map[string]any{"follower_term": resp.Term, "our_term": term})
+				}
+				c.mu.Unlock()
+				ch <- result{success: false, term: resp.Term}
+				return
+			}
+			ch <- result{success: resp.Success, term: resp.Term}
 		}(id)
 	}
-	majority := (len(peers) / 2) + 1
-	timeout := time.After(1200 * time.Millisecond)
+	majority := (totalNodes / 2) + 1
+	timeout := time.After(3 * time.Second) // Increased timeout for network latency
 	for pending := len(peers) - 1; pending > 0; pending-- {
 		select {
-		case ok := <-ch:
-			if ok {
+		case res := <-ch:
+			if res.success {
 				successes++
 			}
 			if successes >= majority {
@@ -513,8 +596,9 @@ func (c *ConsensusImpl) startElection() error {
 	lastIdx, lastTerm, _ := c.lastIndexTerm()
 	req := RequestVoteRequest{Term: term, CandidateID: c.nodeID, LastLogIndex: lastIdx, LastLogTerm: lastTerm}
 	payload, _ := json.Marshal(req)
-	votes := 1
+	votes := 1 // candidate votes for itself
 	peers := c.peers.ListPeers()
+	totalNodes := len(peers) + 1 // Include self in total count
 	ch := make(chan bool, len(peers))
 	for _, id := range peers {
 		if id == c.nodeID {
@@ -525,8 +609,8 @@ func (c *ConsensusImpl) startElection() error {
 			ch <- ok
 		}(id)
 	}
-	majority := (len(peers) / 2) + 1
-	timeout := time.After(1500 * time.Millisecond)
+	majority := (totalNodes / 2) + 1
+	timeout := time.After(3 * time.Second) // Increased timeout for network latency
 	for pending := len(peers) - 1; pending > 0; pending-- {
 		select {
 		case ok := <-ch:
@@ -537,6 +621,7 @@ func (c *ConsensusImpl) startElection() error {
 				c.mu.Lock()
 				c.role = roleLeader
 				c.peers.SetLeader(c.nodeID)
+				c.heartbeatFailures = 0 // Reset failure counter when becoming leader
 				c.mu.Unlock()
 				c.log(slog.LevelInfo, "election_won", "term", term)
 				c.audit("election", "node became leader", map[string]any{"term": term})
@@ -551,6 +636,7 @@ func (c *ConsensusImpl) startElection() error {
 		c.mu.Lock()
 		c.role = roleLeader
 		c.peers.SetLeader(c.nodeID)
+		c.heartbeatFailures = 0 // Reset failure counter when becoming leader
 		c.mu.Unlock()
 		c.log(slog.LevelInfo, "election_won", "term", term)
 		c.audit("election", "node became leader", map[string]any{"term": term})
@@ -585,4 +671,23 @@ func (c *ConsensusImpl) postJSON(url string, body []byte) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// postJSONWithResponse sends a POST request and returns the response body
+func (c *ConsensusImpl) postJSONWithResponse(url string, body []byte) ([]byte, error) {
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if c.hmacSecret != "" {
+		sig := computeHMACSHA256Hex(body, c.hmacSecret)
+		req.Header.Set("X-Cluster-Signature", sig)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errors.New("http error")
+	}
+	return io.ReadAll(resp.Body)
 }

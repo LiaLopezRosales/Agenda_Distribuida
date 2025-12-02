@@ -13,7 +13,7 @@ func StartHeartbeats(ps *EnvPeerStore, stopCh <-chan struct{}) {
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
-		client := &http.Client{Timeout: 1200 * time.Millisecond}
+		client := &http.Client{Timeout: 3 * time.Second} // Increased timeout for network latency
 		for {
 			select {
 			case <-stopCh:

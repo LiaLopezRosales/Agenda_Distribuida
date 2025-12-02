@@ -4,17 +4,17 @@ services:
   agenda:
     image: agenda-distribuida:latest
     deploy:
-      replicas: 7
+      replicas: 4
       restart_policy:
-        condition: on-failure
-      update_config:
-        order: start-first
-      placement:
-        max_replicas_per_node: 4
-        constraints:
-          - node.role == worker
-        preferences:
-          - spread: node.id
+        condition: any
+      # update_config:
+      #   order: start-first
+      # placement:
+      #   max_replicas_per_node: 4
+      #   constraints:
+      #     - node.role == worker
+      # preferences:
+      #     - spread: node.id
     env_file:
       - stack.env
     environment:
@@ -37,10 +37,10 @@ services:
       - agenda_net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/raft/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
 networks:
   agenda_net:

@@ -66,3 +66,4 @@ Los anexos adicionales incluyen:
 - `deploy/docker-stack.yml`: manifiesto Swarm para cumplir con la topología de siete contenedores.
 
 
+
