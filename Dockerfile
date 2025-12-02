@@ -21,7 +21,7 @@ RUN go build -o /agenda ./cmd/server
     FROM alpine:latest
 
     # Instalar certificados (para HTTPS) y curl (usado por el healthcheck)
-    RUN apk add --no-cache ca-certificates curl
+    RUN apk add --no-cache ca-certificates curl sqlite
     
     WORKDIR /app
     

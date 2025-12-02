@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	ad "distributed-agenda"
 )
@@ -90,8 +91,11 @@ func main() {
 		addr = ":8080"
 	}
 	server := &http.Server{
-		Addr:    addr,
-		Handler: r,
+		Addr:         addr,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 	cert := strings.TrimSpace(os.Getenv("TLS_CERT_FILE"))
 	key := strings.TrimSpace(os.Getenv("TLS_KEY_FILE"))

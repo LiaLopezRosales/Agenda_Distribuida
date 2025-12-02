@@ -1,0 +1,142 @@
+version: "3.8"
+
+services:
+  agenda-1:
+    image: agenda-distribuida:latest
+    container_name: agenda-1
+    hostname: agenda-1
+    environment:
+      NODE_ID: "agenda-1"
+      ADVERTISE_ADDR: "agenda-1:8080"
+      HTTP_ADDR: "0.0.0.0:8080"
+      DATABASE_DSN: "file:/data/agenda.db?cache=shared&_fk=1"
+      SWARM_SERVICE_NAME: ""
+      SWARM_SERVICE_PORT: "8080"
+      DISCOVERY_DNS_NAME: ""
+      LOG_LEVEL: "info"
+      CLUSTER_HMAC_SECRET: "5c1d0c7f1d6a0c8a2e9f0b3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
+      AUDIT_API_TOKEN: "mi-token-auditoria-123"
+      LOG_FORMAT: "json"
+      PEERS: "agenda-2:8080,agenda-3:8080,agenda-4:8080"
+    ports:
+      - "8080:8080"  # Puerto principal para acceso desde el host
+      - "8081:8080"  # Puerto alternativo
+    volumes:
+      - agenda_data_1:/data
+    networks:
+      - agenda_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/raft/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  agenda-2:
+    image: agenda-distribuida:latest
+    container_name: agenda-2
+    hostname: agenda-2
+    environment:
+      NODE_ID: "agenda-2"
+      ADVERTISE_ADDR: "agenda-2:8080"
+      HTTP_ADDR: "0.0.0.0:8080"
+      DATABASE_DSN: "file:/data/agenda.db?cache=shared&_fk=1"
+      SWARM_SERVICE_NAME: ""
+      SWARM_SERVICE_PORT: "8080"
+      DISCOVERY_DNS_NAME: ""
+      LOG_LEVEL: "info"
+      CLUSTER_HMAC_SECRET: "5c1d0c7f1d6a0c8a2e9f0b3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
+      AUDIT_API_TOKEN: "mi-token-auditoria-123"
+      LOG_FORMAT: "json"
+      PEERS: "agenda-1:8080,agenda-3:8080,agenda-4:8080"
+    ports:
+      - "8082:8080"
+    volumes:
+      - agenda_data_2:/data
+    networks:
+      - agenda_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/raft/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  agenda-3:
+    image: agenda-distribuida:latest
+    container_name: agenda-3
+    hostname: agenda-3
+    environment:
+      NODE_ID: "agenda-3"
+      ADVERTISE_ADDR: "agenda-3:8080"
+      HTTP_ADDR: "0.0.0.0:8080"
+      DATABASE_DSN: "file:/data/agenda.db?cache=shared&_fk=1"
+      SWARM_SERVICE_NAME: ""
+      SWARM_SERVICE_PORT: "8080"
+      DISCOVERY_DNS_NAME: ""
+      LOG_LEVEL: "info"
+      CLUSTER_HMAC_SECRET: "5c1d0c7f1d6a0c8a2e9f0b3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
+      AUDIT_API_TOKEN: "mi-token-auditoria-123"
+      LOG_FORMAT: "json"
+      PEERS: "agenda-1:8080,agenda-2:8080,agenda-4:8080"
+    ports:
+      - "8083:8080"
+    volumes:
+      - agenda_data_3:/data
+    networks:
+      - agenda_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/raft/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  agenda-4:
+    image: agenda-distribuida:latest
+    container_name: agenda-4
+    hostname: agenda-4
+    environment:
+      NODE_ID: "agenda-4"
+      ADVERTISE_ADDR: "agenda-4:8080"
+      HTTP_ADDR: "0.0.0.0:8080"
+      DATABASE_DSN: "file:/data/agenda.db?cache=shared&_fk=1"
+      SWARM_SERVICE_NAME: ""
+      SWARM_SERVICE_PORT: "8080"
+      DISCOVERY_DNS_NAME: ""
+      LOG_LEVEL: "info"
+      CLUSTER_HMAC_SECRET: "5c1d0c7f1d6a0c8a2e9f0b3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
+      AUDIT_API_TOKEN: "mi-token-auditoria-123"
+      LOG_FORMAT: "json"
+      PEERS: "agenda-1:8080,agenda-2:8080,agenda-3:8080"
+    ports:
+      - "8084:8080"
+    volumes:
+      - agenda_data_4:/data
+    networks:
+      - agenda_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/raft/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+networks:
+  agenda_net:
+    driver: bridge
+
+volumes:
+  agenda_data_1:
+    driver: local
+  agenda_data_2:
+    driver: local
+  agenda_data_3:
+    driver: local
+  agenda_data_4:
+    driver: local
+
