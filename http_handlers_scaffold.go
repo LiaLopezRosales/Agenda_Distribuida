@@ -435,15 +435,60 @@ func (a *API) handleAddMember() http.HandlerFunc {
 			return
 		}
 
-		if err := a.groups.AddMember(actorID, groupID, user.ID, in.Rank); err != nil {
-			if err == ErrUnauthorized {
-				a.log(ctx, slog.LevelWarn, "group_member_add_unauthorized", "group_id", groupID, "actor_id", actorID)
-				http.Error(w, err.Error(), http.StatusForbidden)
+		// Use Raft consensus when available and this node is leader
+		if a.cons != nil && a.cons.IsLeader() {
+			// Authorization logic similar to groupService.AddMember, but without writing
+			group, err := a.groupsRepo.GetGroupByID(groupID)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_member_add_group_lookup_failed", "err", err, "group_id", groupID)
+				http.Error(w, "group not found", http.StatusNotFound)
 				return
 			}
-			a.log(ctx, slog.LevelError, "group_member_add_failed", "err", err, "group_id", groupID)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			rank := in.Rank
+			if group.GroupType == GroupTypeNonHierarchical {
+				if group.CreatorID != actorID {
+					a.log(ctx, slog.LevelWarn, "group_member_add_unauthorized_non_hier", "group_id", groupID, "actor_id", actorID)
+					http.Error(w, ErrUnauthorized.Error(), http.StatusForbidden)
+					return
+				}
+				// All members rank 0 in non-hierarchical groups
+				rank = 0
+			} else {
+				actorRank, err := a.groupsRepo.GetMemberRank(groupID, actorID)
+				if err != nil {
+					a.log(ctx, slog.LevelWarn, "group_member_add_actor_rank_failed", "group_id", groupID, "actor_id", actorID)
+					http.Error(w, ErrUnauthorized.Error(), http.StatusForbidden)
+					return
+				}
+				if rank >= actorRank {
+					a.log(ctx, slog.LevelWarn, "group_member_add_insufficient_rank", "group_id", groupID, "actor_id", actorID, "rank", rank, "actor_rank", actorRank)
+					http.Error(w, ErrUnauthorized.Error(), http.StatusForbidden)
+					return
+				}
+			}
+			entry, err := BuildEntryGroupMemberOp(OpGroupMemberAdd, groupID, user.ID, rank)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_member_add_build_entry_failed", "err", err, "group_id", groupID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "group_member_add_propose_failed", "err", err, "group_id", groupID)
+				http.Error(w, "failed to replicate member add", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Fallback: delegate to group service (writes directly)
+			if err := a.groups.AddMember(actorID, groupID, user.ID, in.Rank); err != nil {
+				if err == ErrUnauthorized {
+					a.log(ctx, slog.LevelWarn, "group_member_add_unauthorized", "group_id", groupID, "actor_id", actorID)
+					http.Error(w, err.Error(), http.StatusForbidden)
+					return
+				}
+				a.log(ctx, slog.LevelError, "group_member_add_failed", "err", err, "group_id", groupID)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		resp := map[string]interface{}{
@@ -961,15 +1006,57 @@ func (a *API) handleUpdateGroup() http.HandlerFunc {
 			return
 		}
 
-		updated, err := a.groups.UpdateGroup(userID, groupID, in.Name, in.Description)
-		if err != nil {
-			a.log(ctx, slog.LevelError, "group_update_failed", "err", err, "group_id", groupID)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// Use Raft consensus when available and this node is leader
+		if a.cons != nil && a.cons.IsLeader() {
+			group, err := a.groupsRepo.GetGroupByID(groupID)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_update_group_lookup_failed", "err", err, "group_id", groupID)
+				http.Error(w, "group not found", http.StatusNotFound)
+				return
+			}
+			if group.CreatorID != userID {
+				a.log(ctx, slog.LevelWarn, "group_update_unauthorized_creator", "group_id", groupID, "user_id", userID)
+				http.Error(w, "unauthorized: only group creator can update", http.StatusForbidden)
+				return
+			}
+			var namePtr, descPtr *string
+			if in.Name != "" {
+				namePtr = &in.Name
+			}
+			if in.Description != "" {
+				descPtr = &in.Description
+			}
+			entry, err := BuildEntryGroupUpdate(groupID, namePtr, descPtr)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_update_build_entry_failed", "err", err, "group_id", groupID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "group_update_propose_failed", "err", err, "group_id", groupID)
+				http.Error(w, "failed to replicate group update", http.StatusInternalServerError)
+				return
+			}
+			// Reload updated group for response
+			updated, err := a.groupsRepo.GetGroupByID(groupID)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_update_reload_failed", "err", err, "group_id", groupID)
+				http.Error(w, "failed to load updated group", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(updated)
+		} else {
+			// Fallback: delegate to group service
+			updated, err := a.groups.UpdateGroup(userID, groupID, in.Name, in.Description)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_update_failed", "err", err, "group_id", groupID)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(updated)
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(updated)
 		a.recordAudit(ctx, "group", "update", "group updated", map[string]any{
 			"group_id": groupID,
 			"user_id":  userID,
@@ -1051,16 +1138,48 @@ func (a *API) handleUpdateMember() http.HandlerFunc {
 			return
 		}
 
-		err := a.groups.UpdateMember(userID, groupID, memberUserID, in.Rank)
-		if err != nil {
-			if err == ErrUnauthorized {
-				a.log(ctx, slog.LevelWarn, "group_member_update_forbidden", "group_id", groupID)
-				http.Error(w, err.Error(), http.StatusForbidden)
+		// Use Raft consensus when available and this node is leader
+		if a.cons != nil && a.cons.IsLeader() {
+			actorRank, err := a.groupsRepo.GetMemberRank(groupID, userID)
+			if err != nil {
+				a.log(ctx, slog.LevelWarn, "group_member_update_actor_rank_failed", "group_id", groupID, "actor_id", userID)
+				http.Error(w, ErrUnauthorized.Error(), http.StatusForbidden)
 				return
 			}
-			a.log(ctx, slog.LevelError, "group_member_update_failed", "err", err, "group_id", groupID)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			targetRank, err := a.groupsRepo.GetMemberRank(groupID, memberUserID)
+			if err != nil {
+				a.log(ctx, slog.LevelWarn, "group_member_update_target_not_found", "group_id", groupID, "member_id", memberUserID)
+				http.Error(w, "member not found", http.StatusBadRequest)
+				return
+			}
+			if actorRank <= targetRank {
+				a.log(ctx, slog.LevelWarn, "group_member_update_insufficient_rank", "group_id", groupID, "actor_rank", actorRank, "target_rank", targetRank)
+				http.Error(w, "unauthorized: insufficient rank to modify this member", http.StatusForbidden)
+				return
+			}
+			entry, err := BuildEntryGroupMemberOp(OpGroupMemberUpdate, groupID, memberUserID, in.Rank)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_member_update_build_entry_failed", "err", err, "group_id", groupID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "group_member_update_propose_failed", "err", err, "group_id", groupID)
+				http.Error(w, "failed to replicate member update", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Fallback: delegate to group service
+			if err := a.groups.UpdateMember(userID, groupID, memberUserID, in.Rank); err != nil {
+				if err == ErrUnauthorized {
+					a.log(ctx, slog.LevelWarn, "group_member_update_forbidden", "group_id", groupID)
+					http.Error(w, err.Error(), http.StatusForbidden)
+					return
+				}
+				a.log(ctx, slog.LevelError, "group_member_update_failed", "err", err, "group_id", groupID)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1095,16 +1214,48 @@ func (a *API) handleRemoveMember() http.HandlerFunc {
 			return
 		}
 
-		err := a.groups.RemoveMember(userID, groupID, memberUserID)
-		if err != nil {
-			if err == ErrUnauthorized {
-				a.log(ctx, slog.LevelWarn, "group_member_remove_forbidden", "group_id", groupID)
-				http.Error(w, err.Error(), http.StatusForbidden)
+		// Use Raft consensus when available and this node is leader
+		if a.cons != nil && a.cons.IsLeader() {
+			actorRank, err := a.groupsRepo.GetMemberRank(groupID, userID)
+			if err != nil {
+				a.log(ctx, slog.LevelWarn, "group_member_remove_actor_rank_failed", "group_id", groupID, "actor_id", userID)
+				http.Error(w, ErrUnauthorized.Error(), http.StatusForbidden)
 				return
 			}
-			a.log(ctx, slog.LevelError, "group_member_remove_failed", "err", err, "group_id", groupID)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			targetRank, err := a.groupsRepo.GetMemberRank(groupID, memberUserID)
+			if err != nil {
+				a.log(ctx, slog.LevelWarn, "group_member_remove_target_not_found", "group_id", groupID, "member_id", memberUserID)
+				http.Error(w, "member not found", http.StatusBadRequest)
+				return
+			}
+			if actorRank <= targetRank {
+				a.log(ctx, slog.LevelWarn, "group_member_remove_insufficient_rank", "group_id", groupID, "actor_rank", actorRank, "target_rank", targetRank)
+				http.Error(w, "unauthorized: insufficient rank to remove this member", http.StatusForbidden)
+				return
+			}
+			entry, err := BuildEntryGroupMemberOp(OpGroupMemberRemove, groupID, memberUserID, 0)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_member_remove_build_entry_failed", "err", err, "group_id", groupID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "group_member_remove_propose_failed", "err", err, "group_id", groupID)
+				http.Error(w, "failed to replicate member remove", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Fallback: delegate to group service
+			if err := a.groups.RemoveMember(userID, groupID, memberUserID); err != nil {
+				if err == ErrUnauthorized {
+					a.log(ctx, slog.LevelWarn, "group_member_remove_forbidden", "group_id", groupID)
+					http.Error(w, err.Error(), http.StatusForbidden)
+					return
+				}
+				a.log(ctx, slog.LevelError, "group_member_remove_failed", "err", err, "group_id", groupID)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1281,15 +1432,35 @@ func (a *API) handleUpdateProfile() http.HandlerFunc {
 			}
 		}
 
-		// Update user
+		// Prepare updated user struct
 		user.DisplayName = in.DisplayName
 		user.Username = in.Username
 		user.Email = in.Email
 
-		if err := a.users.UpdateUser(user); err != nil {
-			a.log(ctx, slog.LevelError, "profile_update_failed", "err", err, "user_id", userID)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// Use Raft consensus when available and this node is leader
+		if a.cons != nil && a.cons.IsLeader() {
+			entry, err := BuildEntryUserUpdateProfile(user)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "profile_update_build_entry_failed", "err", err, "user_id", userID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "profile_update_propose_failed", "err", err, "user_id", userID)
+				http.Error(w, "failed to replicate profile update", http.StatusInternalServerError)
+				return
+			}
+			// After commit, reload user to return fresh data
+			if reloaded, err := a.users.GetUserByID(userID); err == nil && reloaded != nil {
+				user = reloaded
+			}
+		} else {
+			// Fallback for single-node / no-consensus setups
+			if err := a.users.UpdateUser(user); err != nil {
+				a.log(ctx, slog.LevelError, "profile_update_failed", "err", err, "user_id", userID)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		json.NewEncoder(w).Encode(user)
@@ -1346,10 +1517,26 @@ func (a *API) handleUpdatePassword() http.HandlerFunc {
 			return
 		}
 
-		if err := a.users.UpdatePassword(userID, string(hash)); err != nil {
-			a.log(ctx, slog.LevelError, "password_update_failed", "err", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// Use Raft consensus when available and this node is leader
+		if a.cons != nil && a.cons.IsLeader() {
+			entry, err := BuildEntryUserUpdatePassword(userID, string(hash))
+			if err != nil {
+				a.log(ctx, slog.LevelError, "password_update_build_entry_failed", "err", err, "user_id", userID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "password_update_propose_failed", "err", err, "user_id", userID)
+				http.Error(w, "failed to replicate password update", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Fallback for single-node / no-consensus setups
+			if err := a.users.UpdatePassword(userID, string(hash)); err != nil {
+				a.log(ctx, slog.LevelError, "password_update_failed", "err", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)

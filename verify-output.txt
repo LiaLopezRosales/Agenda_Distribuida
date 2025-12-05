@@ -4,12 +4,12 @@
 
 [0;32m[1/6] Verificando estado del cluster...[0m
 
-  [0;34mℹ️[0m  agenda-1 (puerto 8080): seguidor (líder: agenda-2)
-  [0;32m✅[0m agenda-2 (puerto 8082): [0;32mLÍDER[0m (term: node-unknown)
-  [0;34mℹ️[0m  agenda-3 (puerto 8083): seguidor (líder: agenda-2)
-  [0;34mℹ️[0m  agenda-4 (puerto 8084): seguidor (líder: agenda-2)
+  [0;32m✅[0m agenda-1 (puerto 8080): [0;32mLÍDER[0m (term: agenda-1)
+  [0;34mℹ️[0m  agenda-2 (puerto 8082): seguidor (líder: agenda-1)
+  [0;34mℹ️[0m  agenda-3 (puerto 8083): seguidor (líder: agenda-1)
+  [0;34mℹ️[0m  agenda-4 (puerto 8084): seguidor (líder: agenda-1)
 
-[0;32m✅ Líder identificado: agenda-2 (puerto 8082)[0m
+[0;32m✅ Líder identificado: agenda-1 (puerto 8080)[0m
 
 [0;32m[2/6] Verificando estado de replicación RAFT...[0m
 
@@ -23,7 +23,7 @@
      Term: 4 | Commit: 2 | Applied: 2 | Log entries: 2
 
 [0;32m[3/6] Creando usuario de prueba en el líder...[0m
-  [0;32m✅[0m Usuario creado: test_user_1764956927 (ID: 3)
+  [0;32m✅[0m Usuario creado: test_user_1764957827 (ID: 3)
   [0;32m✅[0m Token de autenticación obtenido
 
 [0;32m[4/6] Verificando replicación del usuario en todos los nodos...[0m
@@ -35,7 +35,7 @@
 [0;32m✅ Usuario replicado correctamente en todos los nodos[0m
 
 [0;32m[5/6] Creando cita de prueba...[0m
-  [0;32m✅[0m Cita creada: ID 3 (creada en puerto 8080)
+  [0;32m✅[0m Cita creada: ID 3 (creada en puerto 8082)
 [0;32m[6/6] Verificando replicación de la cita en todos los nodos...[0m
 
   [0;32m✅[0m agenda-1 (puerto 8080): cita encontrada (ID: 3, título: Cita de Prueba Replicación)
@@ -52,21 +52,31 @@
   [0;32m✅[0m agenda-4 (puerto 8084): grupo encontrado (nombre: Grupo Prueba Replicación)
 [0;32m✅ Grupo replicado correctamente en todos los nodos[0m
 
+[0;32m[8/8] Añadiendo miembro al grupo y verificando replicación...[0m
+  [0;32m✅[0m Usuario miembro creado: test_member_
+  [0;32m✅[0m Miembro añadido al grupo en el líder
+  [0;32m✅[0m agenda-1 (puerto 8080): miembro encontrado en el grupo
+  [0;32m✅[0m agenda-2 (puerto 8082): miembro encontrado en el grupo
+  [0;32m✅[0m agenda-3 (puerto 8083): miembro encontrado en el grupo
+  [0;32m✅[0m agenda-4 (puerto 8084): miembro encontrado en el grupo
+[0;32m✅ Miembro de grupo replicado correctamente en todos los nodos[0m
+
 [0;34m═══════════════════════════════════════════════════════════[0m
 [0;32m✅ VERIFICACIÓN COMPLETA[0m
 [0;34m═══════════════════════════════════════════════════════════[0m
 
 [0;32mResumen:[0m
-  - Líder: agenda-2 (puerto 8082)
-  - Usuario de prueba: test_user_1764956927 (ID: 3)
+  - Líder: agenda-1 (puerto 8080)
+  - Usuario de prueba: test_user_1764957827 (ID: 3)
   - Cita de prueba: ID 3
   - Grupo de prueba: Grupo Prueba Replicación
+  - Miembro de grupo: test_member_
   - Replicación: \033[0;32m✅ FUNCIONANDO\033[0m
 
 [0;34mPara verificar manualmente:[0m
   - Ver estado RAFT: curl -s http://localhost:8080/raft/health | jq
-  - Ver agenda (citas): curl -s "http://localhost:8080/api/agenda?start=2025-01-01T00:00:00Z&end=2026-01-01T00:00:00Z" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY0OTU2OTI3IiwiZXhwIjoxNzY1MDQzMzI4LCJpYXQiOjE3NjQ5NTY5Mjh9.C7ZLyUSb3KjCYxIlSTqRzr7cV_rcZ4p6ZgDDiKDI1Pk" | jq
-  - Ver cita específica: curl -s http://localhost:8080/api/appointments/3 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY0OTU2OTI3IiwiZXhwIjoxNzY1MDQzMzI4LCJpYXQiOjE3NjQ5NTY5Mjh9.C7ZLyUSb3KjCYxIlSTqRzr7cV_rcZ4p6ZgDDiKDI1Pk" | jq
+  - Ver agenda (citas): curl -s "http://localhost:8080/api/agenda?start=2025-01-01T00:00:00Z&end=2026-01-01T00:00:00Z" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY0OTU3ODI3IiwiZXhwIjoxNzY1MDQ0MjI3LCJpYXQiOjE3NjQ5NTc4Mjd9.CQ0LKLEhgFT60OPl7C0Sks8H7QUC1FlMxHC6sAlGWXQ" | jq
+  - Ver cita específica: curl -s http://localhost:8080/api/appointments/3 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY0OTU3ODI3IiwiZXhwIjoxNzY1MDQ0MjI3LCJpYXQiOjE3NjQ5NTc4Mjd9.CQ0LKLEhgFT60OPl7C0Sks8H7QUC1FlMxHC6sAlGWXQ" | jq
 
 [1;33mNota:[0m Para consultar la BD directamente, necesitarías instalar sqlite3 en los contenedores
 
