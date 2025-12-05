@@ -199,10 +199,10 @@ func (c *ConsensusImpl) Propose(entry LogEntry) error {
 	}
 	entry.Term = term
 	entry.Index = nextIdx
-	if err := c.appendLog(entry); err != nil {
-		c.log(slog.LevelError, "propose_append_failed", "err", err)
-		return err
-	}
+	// if err := c.appendLog(entry); err != nil {
+	// 	c.log(slog.LevelError, "propose_append_failed", "err", err)
+	// 	return err
+	// }
 	// replicate to followers and wait for majority to commit
 	if err := c.replicateAndCommit(entry); err != nil {
 		c.log(slog.LevelError, "propose_replicate_failed", "err", err)
@@ -495,7 +495,28 @@ func (c *ConsensusImpl) applyCommitted() error {
 // --- networking / majority replication ---
 
 func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, leaderCommit int64) error {
-	prevIdx, prevTerm, _ := c.lastIndexTerm()
+	// Compute PrevLogIndex/PrevLogTerm correctly depending on whether
+	// we are sending new entries or just a heartbeat.
+	var prevIdx, prevTerm int64
+	if len(entries) > 0 {
+		// For new entries, PrevLogIndex is just before the first entry in the batch
+		first := entries[0]
+		if first.Index > 1 {
+			prevIdx = first.Index - 1
+			// Best-effort lookup; if it fails, leave term=0 and let follower reject if needed
+			if t, err := c.logTermAt(prevIdx); err == nil {
+				prevTerm = t
+			}
+		} else {
+			// First entry in log has no previous
+			prevIdx = 0
+			prevTerm = 0
+		}
+	} else {
+		// Heartbeat with no entries: use last index/term from our log
+		prevIdx, prevTerm, _ = c.lastIndexTerm()
+	}
+
 	req := AppendEntriesRequest{
 		Term:         term,
 		LeaderID:     c.nodeID,
@@ -548,18 +569,20 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 	}
 	majority := (totalNodes / 2) + 1
 	timeout := time.After(3 * time.Second) // Increased timeout for network latency
-	for pending := len(peers) - 1; pending > 0; pending-- {
+	for pending := len(peers); pending > 0; pending-- {
 		select {
 		case res := <-ch:
 			if res.success {
 				successes++
+				c.log(slog.LevelDebug, "append_entries_success", "successes", successes, "majority", majority)
 			}
 			if successes >= majority {
+				c.log(slog.LevelInfo, "append_entries_majority_achieved", "successes", successes)
 				return nil
 			}
 		case <-timeout:
-			c.log(slog.LevelWarn, "append_entries_timeout", "pending", pending)
-			return errors.New("append majority timeout")
+			c.log(slog.LevelWarn, "append_entries_timeout", "pending", pending, "successes", successes, "majority", majority)
+			return errors.New("append majority failed")
 		}
 	}
 	if successes >= majority {
@@ -570,16 +593,47 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 }
 
 func (c *ConsensusImpl) replicateAndCommit(entry LogEntry) error {
-	if err := c.broadcastAppendEntries(entry.Term, []LogEntry{entry}, c.state.CommitIndex); err != nil {
-		c.log(slog.LevelWarn, "replicate_failed", "err", err)
+	// First, append to local log
+	if err := c.appendLog(entry); err != nil {
 		return err
 	}
+
+	// Then replicate to followers and wait for majority
+	maxRetries := 5
+	backoff := 100 * time.Millisecond
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			c.log(slog.LevelWarn, "replicate_retry", "attempt", attempt+1, "max_retries", maxRetries)
+			time.Sleep(backoff)
+			backoff *= 2 // Exponential backoff
+		}
+
+		if err := c.broadcastAppendEntries(entry.Term, []LogEntry{entry}, c.state.CommitIndex); err != nil {
+			if err.Error() == "append majority failed" {
+				c.log(slog.LevelWarn, "replicate_no_majority", "attempt", attempt+1)
+				continue // Retry
+			}
+			return err
+		}
+		// Success - break out of retry loop
+		break
+	}
+
+	// Only update commit index after majority has acknowledged
 	c.mu.Lock()
 	if entry.Index > c.state.CommitIndex {
 		c.state.CommitIndex = entry.Index
 		_ = c.persistMeta("commitIndex", c.state.CommitIndex)
+		c.log(slog.LevelInfo, "entry_committed", "index", entry.Index, "op", entry.Op)
 	}
 	c.mu.Unlock()
+
+	// Apply committed entries to state machine
+	if err := c.applyCommitted(); err != nil {
+		c.log(slog.LevelError, "apply_committed_failed", "err", err)
+	}
+
 	return nil
 }
 
