@@ -1288,11 +1288,42 @@ func (a *API) handleAcceptInvitation() http.HandlerFunc {
 			return
 		}
 
-		err := a.apps.AcceptInvitation(userID, appointmentID)
-		if err != nil {
-			a.log(ctx, slog.LevelWarn, "invitation_accept_failed", "err", err, "appointment_id", appointmentID)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		// If consensus is wired and this node is leader, replicate invitation accept via Raft
+		if a.cons != nil && a.cons.IsLeader() {
+			participant, err := a.appsRepo.GetParticipantByAppointmentAndUser(appointmentID, userID)
+			if err != nil {
+				a.log(ctx, slog.LevelWarn, "invitation_accept_participant_not_found", "appointment_id", appointmentID, "user_id", userID)
+				http.Error(w, "invitation not found", http.StatusBadRequest)
+				return
+			}
+			if participant.Status == StatusAccepted {
+				a.log(ctx, slog.LevelWarn, "invitation_accept_already_accepted", "appointment_id", appointmentID, "user_id", userID)
+				http.Error(w, "invitation already accepted", http.StatusBadRequest)
+				return
+			}
+			if participant.Status == StatusDeclined {
+				a.log(ctx, slog.LevelWarn, "invitation_accept_already_declined", "appointment_id", appointmentID, "user_id", userID)
+				http.Error(w, "invitation already declined", http.StatusBadRequest)
+				return
+			}
+			entry, err := BuildEntryInvitationStatus(appointmentID, userID, StatusAccepted)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "invitation_accept_build_entry_failed", "err", err, "appointment_id", appointmentID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "invitation_accept_propose_failed", "err", err, "appointment_id", appointmentID)
+				http.Error(w, "failed to replicate invitation accept", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Fallback: delegate to appointment service
+			if err := a.apps.AcceptInvitation(userID, appointmentID); err != nil {
+				a.log(ctx, slog.LevelWarn, "invitation_accept_failed", "err", err, "appointment_id", appointmentID)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1324,11 +1355,42 @@ func (a *API) handleRejectInvitation() http.HandlerFunc {
 			return
 		}
 
-		err := a.apps.RejectInvitation(userID, appointmentID)
-		if err != nil {
-			a.log(ctx, slog.LevelWarn, "invitation_reject_failed", "err", err, "appointment_id", appointmentID)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		// If consensus is wired and this node is leader, replicate invitation reject via Raft
+		if a.cons != nil && a.cons.IsLeader() {
+			participant, err := a.appsRepo.GetParticipantByAppointmentAndUser(appointmentID, userID)
+			if err != nil {
+				a.log(ctx, slog.LevelWarn, "invitation_reject_participant_not_found", "appointment_id", appointmentID, "user_id", userID)
+				http.Error(w, "invitation not found", http.StatusBadRequest)
+				return
+			}
+			if participant.Status == StatusAccepted {
+				a.log(ctx, slog.LevelWarn, "invitation_reject_already_accepted", "appointment_id", appointmentID, "user_id", userID)
+				http.Error(w, "invitation already accepted", http.StatusBadRequest)
+				return
+			}
+			if participant.Status == StatusDeclined {
+				a.log(ctx, slog.LevelWarn, "invitation_reject_already_declined", "appointment_id", appointmentID, "user_id", userID)
+				http.Error(w, "invitation already declined", http.StatusBadRequest)
+				return
+			}
+			entry, err := BuildEntryInvitationStatus(appointmentID, userID, StatusDeclined)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "invitation_reject_build_entry_failed", "err", err, "appointment_id", appointmentID)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "invitation_reject_propose_failed", "err", err, "appointment_id", appointmentID)
+				http.Error(w, "failed to replicate invitation reject", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// Fallback: delegate to appointment service
+			if err := a.apps.RejectInvitation(userID, appointmentID); err != nil {
+				a.log(ctx, slog.LevelWarn, "invitation_reject_failed", "err", err, "appointment_id", appointmentID)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

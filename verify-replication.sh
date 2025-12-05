@@ -482,6 +482,248 @@ echo -e "${GREEN}✅ Miembro de grupo replicado correctamente en todos los nodos
 echo ""
 
 # ============================================
+# 9. Actualizar perfil del usuario y verificar replicación
+# ============================================
+echo -e "${GREEN}[9/11] Actualizando perfil del usuario y verificando replicación...${NC}"
+
+NEW_DISPLAY_NAME="Usuario Replicado $RANDOM_SUFFIX"
+NEW_EMAIL="${TEST_USERNAME}_${RANDOM_SUFFIX}@example.com"
+
+profile_data=$(cat <<EOF
+{
+  "display_name": "$NEW_DISPLAY_NAME",
+  "username": "$TEST_USERNAME",
+  "email": "$NEW_EMAIL",
+  "current_password": "$TEST_PASSWORD"
+}
+EOF
+)
+
+profile_resp=$(json_request "PUT" "http://localhost:${LEADER_PORT}/api/me/profile" "$profile_data" "$TOKEN")
+
+if echo "$profile_resp" | grep -q "$NEW_DISPLAY_NAME"; then
+    echo -e "  ${GREEN}✅${NC} Perfil actualizado en el líder"
+else
+    echo -e "  ${RED}❌${NC} Error al actualizar perfil en el líder: $profile_resp"
+    exit 1
+fi
+
+# Esperar a que se replique
+sleep 3
+
+ALL_PROFILE_REPLICATED=true
+
+for i in "${!NODES[@]}"; do
+    node=${NODES[$i]}
+    port=${PORTS[$i]}
+
+    if docker ps --format '{{.Names}}' | grep -q "^${node}$"; then
+        row=$(query_db "$node" "SELECT display_name, email FROM users WHERE id=$USER_ID;" 2>/dev/null || echo "ERROR")
+        if echo "$row" | grep -q "$NEW_DISPLAY_NAME" && echo "$row" | grep -q "$NEW_EMAIL"; then
+            echo -e "  ${GREEN}✅${NC} $node (puerto $port): perfil actualizado (display_name/email)"
+        else
+            echo -e "  ${RED}❌${NC} $node (puerto $port): perfil NO actualizado (fila: $row)"
+            ALL_PROFILE_REPLICATED=false
+        fi
+    fi
+done
+
+if [ "$ALL_PROFILE_REPLICATED" = false ]; then
+    echo -e "${RED}❌ La replicación del perfil falló en algunos nodos${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Perfil replicado correctamente en todos los nodos${NC}"
+echo ""
+
+# ============================================
+# 10. Actualizar contraseña y verificar hash replicado
+# ============================================
+echo -e "${GREEN}[10/11] Actualizando contraseña y verificando hash replicado...${NC}"
+
+NEW_PASSWORD="${TEST_PASSWORD}_nuevo"
+
+password_data=$(cat <<EOF
+{
+  "current_password": "$TEST_PASSWORD",
+  "new_password": "$NEW_PASSWORD"
+}
+EOF
+)
+
+password_resp=$(json_request "PUT" "http://localhost:${LEADER_PORT}/api/me/password" "$password_data" "$TOKEN")
+
+if echo "$password_resp" | grep -q "Password updated successfully"; then
+    echo -e "  ${GREEN}✅${NC} Contraseña actualizada en el líder"
+else
+    echo -e "  ${RED}❌${NC} Error al actualizar contraseña en el líder: $password_resp"
+    exit 1
+fi
+
+# Esperar a que se replique el hash
+sleep 3
+
+PASSWORD_HASH_REF=""
+ALL_PASSWORD_REPLICATED=true
+
+for i in "${!NODES[@]}"; do
+    node=${NODES[$i]}
+    port=${PORTS[$i]}
+
+    if docker ps --format '{{.Names}}' | grep -q "^${node}$"; then
+        hash=$(query_db "$node" "SELECT password_hash FROM users WHERE id=$USER_ID;" 2>/dev/null || echo "ERROR")
+        if [ "$hash" = "ERROR" ] || [ -z "$hash" ]; then
+            echo -e "  ${RED}❌${NC} $node (puerto $port): no se pudo obtener password_hash"
+            ALL_PASSWORD_REPLICATED=false
+            continue
+        fi
+        if [ -z "$PASSWORD_HASH_REF" ]; then
+            PASSWORD_HASH_REF="$hash"
+        fi
+        if [ "$hash" = "$PASSWORD_HASH_REF" ]; then
+            echo -e "  ${GREEN}✅${NC} $node (puerto $port): hash de contraseña coincide"
+        else
+            echo -e "  ${RED}❌${NC} $node (puerto $port): hash de contraseña DIFERENTE"
+            ALL_PASSWORD_REPLICATED=false
+        fi
+    fi
+done
+
+if [ "$ALL_PASSWORD_REPLICATED" = false ]; then
+    echo -e "${RED}❌ La replicación del hash de contraseña falló en algunos nodos${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Hash de contraseña replicado correctamente en todos los nodos${NC}"
+echo ""
+
+# ============================================
+# 11. Aceptar invitación a cita y verificar replicación
+# ============================================
+echo -e "${GREEN}[11/11] Creando cita de grupo con invitado, aceptando invitación y verificando replicación...${NC}"
+
+# Crear una cita de grupo donde el miembro sea invitado (participante pending)
+INV_APPT_TITLE="Cita Invitacion Replicacion"
+
+inv_appt_data=$(cat <<EOF
+{
+  "title": "$INV_APPT_TITLE",
+  "description": "Cita para probar replicación de invitaciones",
+  "start": "2025-01-01T10:00:00Z",
+  "end": "2025-01-01T11:00:00Z",
+  "privacy": "full",
+  "group_id": $GROUP_ID
+}
+EOF
+)
+
+inv_appt_resp=$(json_request "POST" "http://localhost:${LEADER_PORT}/api/appointments" "$inv_appt_data" "$TOKEN")
+
+if echo "$inv_appt_resp" | grep -q "$INV_APPT_TITLE"; then
+    echo -e "  ${GREEN}✅${NC} Cita de grupo creada en el líder"
+else
+    echo -e "  ${RED}❌${NC} Error al crear cita de grupo: $inv_appt_resp"
+    exit 1
+fi
+
+# Obtener IDs necesarios desde la BD del líder
+INV_APPT_ID=$(query_db "$LEADER_NODE" "SELECT id FROM appointments WHERE title='$INV_APPT_TITLE' ORDER BY id DESC LIMIT 1;" 2>/dev/null || echo "ERROR")
+if [ "$INV_APPT_ID" = "ERROR" ] || [ -z "$INV_APPT_ID" ]; then
+    echo -e "  ${RED}❌${NC} No se pudo obtener el ID de la cita de invitación"
+    exit 1
+fi
+
+MEMBER_ID=$(query_db "$LEADER_NODE" "SELECT id FROM users WHERE username='$MEMBER_USERNAME' LIMIT 1;" 2>/dev/null || echo "ERROR")
+if [ "$MEMBER_ID" = "ERROR" ] || [ -z "$MEMBER_ID" ]; then
+    echo -e "  ${RED}❌${NC} No se pudo obtener el ID del usuario miembro"
+    exit 1
+fi
+
+# Obtener token del usuario miembro para aceptar la invitación
+member_login_data=$(cat <<EOF
+{
+  "username": "$MEMBER_USERNAME",
+  "password": "$MEMBER_PASSWORD"
+}
+EOF
+)
+
+member_login_resp=$(curl -s -X POST "http://localhost:${LEADER_PORT}/login" \
+  -H "Content-Type: application/json" \
+  -d "$member_login_data")
+
+MEMBER_TOKEN=$(echo "$member_login_resp" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+
+if [ -z "$MEMBER_TOKEN" ]; then
+    echo -e "  ${RED}❌${NC} No se pudo obtener token para el usuario miembro: $member_login_resp"
+    exit 1
+fi
+
+# Aceptar la invitación como miembro (esto debe replicarse vía Raft)
+inv_accept_resp=$(json_request "POST" "http://localhost:${LEADER_PORT}/api/appointments/${INV_APPT_ID}/accept" "" "$MEMBER_TOKEN")
+
+if echo "$inv_accept_resp" | grep -q '"status"'; then
+    echo -e "  ${GREEN}✅${NC} Invitación aceptada en el líder"
+else
+    echo -e "  ${RED}❌${NC} Error al aceptar invitación en el líder: $inv_accept_resp"
+    exit 1
+fi
+
+# Esperar a que la operación se replique
+sleep 3
+
+ALL_INV_STATUS_REPLICATED=true
+
+for i in "${!NODES[@]}"; do
+    node=${NODES[$i]}
+    port=${PORTS[$i]}
+
+    if docker ps --format '{{.Names}}' | grep -q "^${node}$"; then
+        p_status=$(query_db "$node" "SELECT status FROM participants WHERE appointment_id=$INV_APPT_ID AND user_id=$MEMBER_ID;" 2>/dev/null || echo "ERROR")
+        if echo "$p_status" | grep -q "accepted"; then
+            echo -e "  ${GREEN}✅${NC} $node (puerto $port): estado de invitación = accepted"
+        else
+            echo -e "  ${RED}❌${NC} $node (puerto $port): estado de invitación NO es accepted (valor: $p_status)"
+            ALL_INV_STATUS_REPLICATED=false
+        fi
+    fi
+done
+
+if [ "$ALL_INV_STATUS_REPLICATED" = false ]; then
+    echo -e "${RED}❌ La replicación del estado de invitación falló en algunos nodos${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Estado de invitación replicado correctamente en todos los nodos${NC}"
+echo ""
+
+# Verificar notificación de invitación aceptada para el owner en todos los nodos
+ALL_INV_NOTIF_REPLICATED=true
+
+for i in "${!NODES[@]}"; do
+    node=${NODES[$i]}
+    port=${PORTS[$i]}
+
+    if docker ps --format '{{.Names}}' | grep -q "^${node}$"; then
+        notif_count=$(query_db "$node" "SELECT COUNT(*) FROM notifications WHERE user_id=$USER_ID AND type='invitation_accepted' AND payload LIKE '%\"appointment_id\":$INV_APPT_ID%';" 2>/dev/null || echo "ERROR")
+        if [ "$notif_count" = "1" ]; then
+            echo -e "  ${GREEN}✅${NC} $node (puerto $port): notificación de invitación aceptada encontrada"
+        else
+            echo -e "  ${RED}❌${NC} $node (puerto $port): notificación de invitación aceptada NO encontrada (count: $notif_count)"
+            ALL_INV_NOTIF_REPLICATED=false
+        fi
+    fi
+done
+
+if [ "$ALL_INV_NOTIF_REPLICATED" = false ]; then
+    echo -e "${RED}❌ La replicación de la notificación de invitación aceptada falló en algunos nodos${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Notificaciones de invitación aceptada replicadas correctamente en todos los nodos${NC}"
+echo ""
+
+# ============================================
 # Resumen final
 # ============================================
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
@@ -494,6 +736,9 @@ echo "  - Usuario de prueba: $TEST_USERNAME (ID: $USER_ID)"
 echo "  - Cita de prueba: ID $APPT_ID"
 echo "  - Grupo de prueba: $GROUP_NAME"
 echo "  - Miembro de grupo: $MEMBER_USERNAME"
+echo "  - Nuevo display_name: $NEW_DISPLAY_NAME"
+echo "  - Nuevo email: $NEW_EMAIL"
+echo "  - Cita de invitación: ID $INV_APPT_ID"
 echo "  - Replicación: ${GREEN}✅ FUNCIONANDO${NC}"
 echo ""
 echo -e "${BLUE}Para verificar manualmente:${NC}"

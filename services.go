@@ -476,11 +476,55 @@ func (s *appointmentService) CreateGroupAppointment(ownerID int64, a Appointment
 	}
 	a.OwnerID = ownerID
 	a.Status = StatusPending // estado inicial global
+
+	// If consensus is wired and this node is leader, create via Raft
+	if s.cons != nil && s.cons.IsLeader() {
+		entry, err := BuildEntryApptCreateGroup(ownerID, a)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := s.cons.Propose(entry); err != nil {
+			return nil, nil, err
+		}
+		// After commit, try to reload the created appointment and its participants
+		// using a small time window and matching by title/group.
+		windowStart := a.Start.Add(-1 * time.Second)
+		windowEnd := a.End.Add(1 * time.Second)
+		apps, err := s.apps.GetGroupAgenda(*a.GroupID, windowStart, windowEnd)
+		if err == nil {
+			for _, cand := range apps {
+				if cand.Title == a.Title && cand.Start.Equal(a.Start) && cand.End.Equal(a.End) {
+					// Found the created appointment; load participants
+					partsDetails, err := s.apps.GetAppointmentParticipants(cand.ID)
+					if err != nil {
+						return &cand, nil, nil
+					}
+					parts := make([]Participant, 0, len(partsDetails))
+					for _, pd := range partsDetails {
+						parts = append(parts, Participant{
+							ID:            pd.ID,
+							AppointmentID: pd.AppointmentID,
+							UserID:        pd.UserID,
+							Status:        pd.Status,
+							IsOptional:    pd.IsOptional,
+							CreatedAt:     pd.CreatedAt,
+							UpdatedAt:     pd.UpdatedAt,
+						})
+					}
+					return &cand, parts, nil
+				}
+			}
+		}
+		// If we cannot reliably reload, return the original struct without participants
+		return &a, nil, nil
+	}
+
+	// Fallback: single-node / no-consensus path
 	participants, err := s.apps.CreateGroupAppointment(&a)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Notifications are handled by handlers.go for better UI integration
+	// Notifications are handled by handlers.go / storage for better UI integration
 	// evento
 	evt := Event{
 		Entity:   "appointment",
