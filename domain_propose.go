@@ -125,3 +125,73 @@ func BuildEntryUserUpdatePassword(userID int64, passwordHash string) (LogEntry, 
 		Timestamp:   time.Now(),
 	}, nil
 }
+
+func BuildEntryGroupCreate(g *Group) (LogEntry, error) {
+	p := groupCreatePayload{
+		Name:        g.Name,
+		Description: g.Description,
+		CreatorID:   g.CreatorID,
+		CreatorUser: g.CreatorUserName,
+		GroupType:   g.GroupType,
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "group",
+		AggregateID: strconv.FormatInt(g.ID, 10),
+		Op:          OpGroupCreate,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
+func BuildEntryGroupUpdate(groupID int64, name, description *string) (LogEntry, error) {
+	p := groupUpdatePayload{GroupID: groupID, Name: name, Description: description}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "group",
+		AggregateID: strconv.FormatInt(groupID, 10),
+		Op:          OpGroupUpdate,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
+func BuildEntryGroupDelete(groupID int64) (LogEntry, error) {
+	p := groupDeletePayload{GroupID: groupID}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "group",
+		AggregateID: strconv.FormatInt(groupID, 10),
+		Op:          OpGroupDelete,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
+func BuildEntryGroupMemberOp(op string, groupID, userID int64, rank int) (LogEntry, error) {
+	p := groupMemberPayload{GroupID: groupID, UserID: userID, Rank: rank}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "group_member",
+		AggregateID: strconv.FormatInt(groupID, 10),
+		Op:          op,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}

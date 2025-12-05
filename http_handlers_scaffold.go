@@ -350,18 +350,34 @@ func (a *API) handleCreateGroup() http.HandlerFunc {
 			GroupType:       GroupType(gt), // ✅ guardar correctamente
 		}
 
-		if err := a.groupsRepo.CreateGroup(g); err != nil {
-			a.log(ctx, slog.LevelError, "group_create_failed", "err", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if gt == "hierarchical" {
-			if err := a.groupsRepo.AddGroupMember(g.ID, user.ID, 10, nil); err != nil {
-				a.log(ctx, slog.LevelError, "group_add_owner_failed", "err", err, "group_id", g.ID)
+		// If consensus is wired and this node is leader, replicate group creation via Raft
+		if a.cons != nil && a.cons.IsLeader() {
+			entry, err := BuildEntryGroupCreate(g)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "group_create_build_entry_failed", "err", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "group_create_propose_failed", "err", err)
+				http.Error(w, "failed to replicate group", http.StatusInternalServerError)
+				return
 			}
 		} else {
-			if err := a.groupsRepo.AddGroupMember(g.ID, user.ID, 0, nil); err != nil {
-				a.log(ctx, slog.LevelError, "group_add_owner_failed", "err", err, "group_id", g.ID)
+			// Fallback for single-node or no-consensus setups: write directly
+			if err := a.groupsRepo.CreateGroup(g); err != nil {
+				a.log(ctx, slog.LevelError, "group_create_failed", "err", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if gt == "hierarchical" {
+				if err := a.groupsRepo.AddGroupMember(g.ID, user.ID, 10, nil); err != nil {
+					a.log(ctx, slog.LevelError, "group_add_owner_failed", "err", err, "group_id", g.ID)
+				}
+			} else {
+				if err := a.groupsRepo.AddGroupMember(g.ID, user.ID, 0, nil); err != nil {
+					a.log(ctx, slog.LevelError, "group_add_owner_failed", "err", err, "group_id", g.ID)
+				}
 			}
 		}
 
