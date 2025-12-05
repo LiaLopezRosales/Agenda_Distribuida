@@ -80,13 +80,12 @@ func LeaderWriteMiddleware(cons Consensus, leaderAddrResolver func(string) strin
 
 			path := r.URL.Path
 
-			// Never redirect internal control endpoints or public auth endpoints
-			// /register and /login can be handled by any node (they don't require consensus)
+			// Never redirect internal control endpoints or public auth endpoints that don't need consensus
+			// /login can be handled by any node (stateless auth), but /register should go through the leader
 			if strings.HasPrefix(path, "/raft/") ||
 				strings.HasPrefix(path, "/cluster/") ||
 				strings.HasPrefix(path, "/ws") ||
 				strings.HasPrefix(path, "/ui/") ||
-				path == "/register" ||
 				path == "/login" {
 				// Log for debugging
 				Logger().Debug("middleware_allowing_local", "path", path, "method", r.Method, "is_leader", cons != nil && cons.IsLeader())
@@ -94,36 +93,35 @@ func LeaderWriteMiddleware(cons Consensus, leaderAddrResolver func(string) strin
 				return
 			}
 
-			// Only redirect write operations under /api/ to leader
+			// For /register, enforce that writes go through the leader as well
+			if path == "/register" && cons != nil && !cons.IsLeader() {
+				leaderID := cons.LeaderID()
+				if leaderID != "" {
+					addr := leaderAddrResolver(leaderID)
+					proxyRequestToLeader(w, r, addr)
+					return
+				}
+			}
+
+			// If this node is leader or consensus is not wired, handle normally
 			if cons == nil || cons.IsLeader() {
 				next.ServeHTTP(w, r)
 				return
 			}
 
+			// On followers, proxy write operations under /api/ to the leader
 			if strings.HasPrefix(path, "/api/") {
 				if r.Method == http.MethodPost || r.Method == http.MethodPut ||
 					r.Method == http.MethodDelete || r.Method == http.MethodPatch {
 					leaderID := cons.LeaderID()
 					if leaderID != "" {
 						addr := leaderAddrResolver(leaderID)
-						// For browser requests, use proxy approach instead of redirect
-						// because browsers may not follow redirects to internal IPs
-						userAgent := r.Header.Get("User-Agent")
-						if strings.Contains(userAgent, "Mozilla") ||
-							strings.Contains(userAgent, "Chrome") ||
-							strings.Contains(userAgent, "Safari") ||
-							strings.Contains(userAgent, "Firefox") ||
-							strings.Contains(userAgent, "Edg") {
-							// Proxy the request to the leader
-							proxyRequestToLeader(w, r, addr)
-							return
-						}
-						// For non-browser requests, use redirect
-						http.Redirect(w, r, "http://"+addr+r.RequestURI, http.StatusTemporaryRedirect)
+						proxyRequestToLeader(w, r, addr)
 						return
 					}
 				}
 			}
+			// Non-write or non-/api/ requests on followers are handled locally
 			next.ServeHTTP(w, r)
 		})
 	}

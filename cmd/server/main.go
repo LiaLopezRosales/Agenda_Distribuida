@@ -68,8 +68,8 @@ func main() {
 	stopHB := make(chan struct{})
 	ad.StartHeartbeats(ps, stopHB)
 
-	// Pass storage as UserRepository, GroupRepository, and AppointmentRepository
-	api := ad.NewAPI(auth, groups, apps, agenda, notes, storage, storage, storage, storage)
+	// Pass storage as UserRepository, GroupRepository, and AppointmentRepository and wire consensus into API
+	api := ad.NewAPI(auth, groups, apps, agenda, notes, storage, storage, storage, storage, cons)
 	r := api.Router()
 	// inject consensus into appointment service for write proposals
 	apps.SetConsensus(cons)

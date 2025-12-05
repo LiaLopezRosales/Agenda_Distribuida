@@ -34,6 +34,7 @@ type API struct {
 	logger     *slog.Logger
 	auditRepo  AuditRepository
 	auditToken string
+	cons       Consensus
 }
 
 type responseRecorder struct {
@@ -106,6 +107,7 @@ func NewAPI(
 	groupsRepo GroupRepository, // Add group repository parameter
 	appsRepo AppointmentRepository, // Add appointment repository parameter
 	auditRepo AuditRepository,
+	cons Consensus,
 ) *API {
 	r := mux.NewRouter()
 	logger := Logger()
@@ -122,6 +124,7 @@ func NewAPI(
 		logger:     logger,
 		auditRepo:  auditRepo,
 		auditToken: os.Getenv("AUDIT_API_TOKEN"),
+		cons:       cons,
 	}
 
 	r.Use(api.requestIDMiddleware())
@@ -234,10 +237,29 @@ func (a *API) handleRegister() http.HandlerFunc {
 			display = in.Name
 		}
 		u := &User{Username: in.Username, Email: in.Email, DisplayName: display, PasswordHash: hash}
-		if err := a.users.CreateUser(u); err != nil {
-			a.log(ctx, slog.LevelWarn, "register_create_failed", "err", err, "username", in.Username)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// If consensus is wired and this node is leader, replicate user via Raft
+		if a.cons != nil && a.cons.IsLeader() {
+			entry, err := BuildEntryUserCreate(u)
+			if err != nil {
+				a.log(ctx, slog.LevelError, "register_build_entry_failed", "err", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if err := a.cons.Propose(entry); err != nil {
+				a.log(ctx, slog.LevelError, "register_propose_failed", "err", err)
+				http.Error(w, "failed to replicate user", http.StatusInternalServerError)
+				return
+			}
+			// After commit, load the user from storage to get its ID
+			if created, err := a.users.GetUserByUsername(u.Username); err == nil && created != nil {
+				u = created
+			}
+		} else {
+			if err := a.users.CreateUser(u); err != nil {
+				a.log(ctx, slog.LevelWarn, "register_create_failed", "err", err, "username", in.Username)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		// issue token so UI can auto-login after register
 		token, err := a.auth.GenerateToken(u)

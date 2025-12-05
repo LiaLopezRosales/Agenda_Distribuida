@@ -10,7 +10,18 @@ const (
 	OpApptCreatePersonal = "appointment.create_personal"
 	OpApptUpdate         = "appointment.update"
 	OpApptDelete         = "appointment.delete"
+	OpUserCreate         = "user.create"
+	OpUserUpdateProfile  = "user.update_profile"
+	OpUserUpdatePassword = "user.update_password"
 )
+
+type userCreatePayload struct {
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"password_hash"`
+	ID           int64  `json:"id"`
+	DisplayName  string `json:"display_name"`
+}
 
 type apptCreatePayload struct {
 	Title       string    `json:"title"`
@@ -32,6 +43,18 @@ type apptUpdatePayload struct {
 
 type apptDeletePayload struct {
 	AppointmentID int64 `json:"appointment_id"`
+}
+
+type userUpdateProfilePayload struct {
+	UserID      int64   `json:"user_id"`
+	Username    *string `json:"username,omitempty"`
+	Email       *string `json:"email,omitempty"`
+	DisplayName *string `json:"display_name,omitempty"`
+}
+
+type userUpdatePasswordPayload struct {
+	UserID       int64  `json:"user_id"`
+	PasswordHash string `json:"password_hash"`
 }
 
 func NewRaftApplier(store *Storage) func(LogEntry) error {
@@ -87,6 +110,45 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				return err
 			}
 			return store.DeleteAppointment(p.AppointmentID)
+		case OpUserCreate:
+			var p userCreatePayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			u := &User{
+				Username:     p.Username,
+				Email:        p.Email,
+				PasswordHash: p.PasswordHash,
+				ID:           p.ID,
+				DisplayName:  p.DisplayName,
+			}
+			return store.CreateUser(u)
+		case OpUserUpdateProfile:
+			var p userUpdateProfilePayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			u, err := store.GetUserByID(p.UserID)
+			if err != nil {
+				return err
+			}
+			if p.Username != nil {
+				u.Username = *p.Username
+			}
+			if p.Email != nil {
+				u.Email = *p.Email
+			}
+			if p.DisplayName != nil {
+				u.DisplayName = *p.DisplayName
+			}
+			return store.UpdateUser(u)
+		case OpUserUpdatePassword:
+			var p userUpdatePasswordPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			return store.UpdatePassword(p.UserID, p.PasswordHash)
+
 		default:
 			return errors.New("unsupported op: " + e.Op)
 		}
