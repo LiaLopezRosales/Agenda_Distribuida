@@ -346,6 +346,60 @@ echo -e "${GREEN}✅ Cita replicada correctamente en todos los nodos${NC}"
 echo ""
 
 # ============================================
+# 7. Crear un grupo de prueba
+# ============================================
+echo -e "${GREEN}[7/7] Creando grupo de prueba y verificando replicación...${NC}"
+
+GROUP_NAME="Grupo Prueba Replicación"
+GROUP_DESC="Este grupo debe replicarse a todos los nodos"
+
+group_data=$(cat <<EOF
+{
+  "name": "$GROUP_NAME",
+  "description": "$GROUP_DESC",
+  "group_type": "non_hierarchical"
+}
+EOF
+)
+
+group_response=$(json_request "POST" "http://localhost:${LEADER_PORT}/api/groups" "$group_data" "$TOKEN")
+
+if echo "$group_response" | grep -q '"name"'; then
+    echo -e "  ${GREEN}✅${NC} Grupo creado en el líder"
+else
+    echo -e "  ${RED}❌${NC} Error al crear grupo: $group_response"
+    exit 1
+fi
+
+# Esperar a que la operación se replique
+sleep 3
+
+ALL_GROUPS_REPLICATED=true
+
+for i in "${!NODES[@]}"; do
+    node=${NODES[$i]}
+    port=${PORTS[$i]}
+
+    if docker ps --format '{{.Names}}' | grep -q "^${node}$"; then
+        group_count=$(query_db "$node" "SELECT COUNT(*) FROM groups WHERE name='$GROUP_NAME';" 2>/dev/null || echo "ERROR")
+        if [ "$group_count" = "1" ]; then
+            echo -e "  ${GREEN}✅${NC} $node (puerto $port): grupo encontrado (nombre: $GROUP_NAME)"
+        else
+            echo -e "  ${RED}❌${NC} $node (puerto $port): grupo NO encontrado (count: $group_count)"
+            ALL_GROUPS_REPLICATED=false
+        fi
+    fi
+done
+
+if [ "$ALL_GROUPS_REPLICATED" = false ]; then
+    echo -e "${RED}❌ La replicación del grupo falló en algunos nodos${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Grupo replicado correctamente en todos los nodos${NC}"
+echo ""
+
+# ============================================
 # Resumen final
 # ============================================
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
@@ -356,6 +410,7 @@ echo -e "${GREEN}Resumen:${NC}"
 echo "  - Líder: $LEADER_NODE (puerto $LEADER_PORT)"
 echo "  - Usuario de prueba: $TEST_USERNAME (ID: $USER_ID)"
 echo "  - Cita de prueba: ID $APPT_ID"
+echo "  - Grupo de prueba: $GROUP_NAME"
 echo "  - Replicación: ${GREEN}✅ FUNCIONANDO${NC}"
 echo ""
 echo -e "${BLUE}Para verificar manualmente:${NC}"
