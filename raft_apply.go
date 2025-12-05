@@ -8,6 +8,7 @@ import (
 
 const (
 	OpApptCreatePersonal = "appointment.create_personal"
+	OpApptCreateGroup    = "appointment.create_group"
 	OpApptUpdate         = "appointment.update"
 	OpApptDelete         = "appointment.delete"
 	OpUserCreate         = "user.create"
@@ -19,6 +20,8 @@ const (
 	OpGroupMemberAdd     = "group.member_add"
 	OpGroupMemberUpdate  = "group.member_update"
 	OpGroupMemberRemove  = "group.member_remove"
+	OpInvitationAccept   = "invitation.accept"
+	OpInvitationReject   = "invitation.reject"
 )
 
 type userCreatePayload struct {
@@ -33,6 +36,16 @@ type apptCreatePayload struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	OwnerID     int64     `json:"owner_id"`
+	Start       time.Time `json:"start"`
+	End         time.Time `json:"end"`
+	Privacy     Privacy   `json:"privacy"`
+}
+
+type apptCreateGroupPayload struct {
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	OwnerID     int64     `json:"owner_id"`
+	GroupID     int64     `json:"group_id"`
 	Start       time.Time `json:"start"`
 	End         time.Time `json:"end"`
 	Privacy     Privacy   `json:"privacy"`
@@ -87,6 +100,12 @@ type groupMemberPayload struct {
 	Rank    int   `json:"rank"`
 }
 
+type invitationStatusPayload struct {
+	AppointmentID int64      `json:"appointment_id"`
+	UserID        int64      `json:"user_id"`
+	Status        ApptStatus `json:"status"`
+}
+
 func NewRaftApplier(store *Storage) func(LogEntry) error {
 	return func(e LogEntry) error {
 		switch e.Op {
@@ -109,6 +128,26 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			}
 			part := &Participant{AppointmentID: a.ID, UserID: p.OwnerID, Status: StatusAccepted}
 			return store.AddParticipant(part)
+		case OpApptCreateGroup:
+			var p apptCreateGroupPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			gID := p.GroupID
+			a := &Appointment{
+				Title:       p.Title,
+				Description: p.Description,
+				OwnerID:     p.OwnerID,
+				GroupID:     &gID,
+				Start:       p.Start,
+				End:         p.End,
+				Privacy:     p.Privacy,
+				Status:      StatusPending,
+			}
+			// This will insert the appointment, compute participants based on group membership
+			// and create the corresponding invite notifications on every node.
+			_, err := store.CreateGroupAppointment(a)
+			return err
 		case OpApptUpdate:
 			var p apptUpdatePayload
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
@@ -239,6 +278,61 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				return err
 			}
 			return store.RemoveGroupMember(p.GroupID, p.UserID)
+		case OpInvitationAccept, OpInvitationReject:
+			var p invitationStatusPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			if err := store.UpdateParticipantStatus(p.AppointmentID, p.UserID, p.Status); err != nil {
+				return err
+			}
+			// Create notification for the appointment owner with enriched details
+			appointment, err := store.GetAppointmentByID(p.AppointmentID)
+			if err != nil || appointment == nil {
+				return nil
+			}
+			var userUsername, userDisplayName string
+			if user, err := store.GetUserByID(p.UserID); err == nil && user != nil {
+				userUsername = user.Username
+				userDisplayName = user.DisplayName
+			}
+			statusStr := "accepted"
+			if p.Status == StatusDeclined {
+				statusStr = "declined"
+			}
+			payload := struct {
+				AppointmentID int64  `json:"appointment_id"`
+				Title         string `json:"title"`
+				UserID        int64  `json:"user_id"`
+				UserUsername  string `json:"user_username"`
+				UserName      string `json:"user_display_name"`
+				Status        string `json:"status"`
+				Start         string `json:"start"`
+				End           string `json:"end"`
+			}{
+				AppointmentID: p.AppointmentID,
+				Title:         appointment.Title,
+				UserID:        p.UserID,
+				UserUsername:  userUsername,
+				UserName:      userDisplayName,
+				Status:        statusStr,
+				Start:         appointment.Start.Format(time.RFC3339),
+				End:           appointment.End.Format(time.RFC3339),
+			}
+			b, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			noteType := "invitation_accepted"
+			if p.Status == StatusDeclined {
+				noteType = "invitation_declined"
+			}
+			return store.AddNotification(&Notification{
+				UserID:    appointment.OwnerID,
+				Type:      noteType,
+				Payload:   string(b),
+				CreatedAt: time.Now(),
+			})
 
 		default:
 			return errors.New("unsupported op: " + e.Op)

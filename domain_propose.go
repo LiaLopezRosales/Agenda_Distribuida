@@ -29,6 +29,34 @@ func BuildEntryApptCreatePersonal(ownerID int64, a Appointment) (LogEntry, error
 	}, nil
 }
 
+func BuildEntryApptCreateGroup(ownerID int64, a Appointment) (LogEntry, error) {
+	var groupID int64
+	if a.GroupID != nil {
+		groupID = *a.GroupID
+	}
+	p := apptCreateGroupPayload{
+		Title:       a.Title,
+		Description: a.Description,
+		OwnerID:     ownerID,
+		GroupID:     groupID,
+		Start:       a.Start,
+		End:         a.End,
+		Privacy:     a.Privacy,
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "appointment_group",
+		AggregateID: strconv.FormatInt(ownerID, 10),
+		Op:          OpApptCreateGroup,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
 func BuildEntryApptUpdate(a Appointment) (LogEntry, error) {
 	p := apptUpdatePayload{
 		AppointmentID: a.ID,
@@ -190,6 +218,26 @@ func BuildEntryGroupMemberOp(op string, groupID, userID int64, rank int) (LogEnt
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "group_member",
 		AggregateID: strconv.FormatInt(groupID, 10),
+		Op:          op,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
+func BuildEntryInvitationStatus(appointmentID, userID int64, status ApptStatus) (LogEntry, error) {
+	op := OpInvitationAccept
+	if status == StatusDeclined {
+		op = OpInvitationReject
+	}
+	p := invitationStatusPayload{AppointmentID: appointmentID, UserID: userID, Status: status}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "invitation",
+		AggregateID: strconv.FormatInt(appointmentID, 10),
 		Op:          op,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
