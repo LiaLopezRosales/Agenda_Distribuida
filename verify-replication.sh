@@ -400,6 +400,88 @@ echo -e "${GREEN}✅ Grupo replicado correctamente en todos los nodos${NC}"
 echo ""
 
 # ============================================
+# 8. Añadir miembro al grupo y verificar replicación
+# ============================================
+echo -e "${GREEN}[8/8] Añadiendo miembro al grupo y verificando replicación...${NC}"
+
+MEMBER_USERNAME="test_member_${RANDOM_SUFFIX}"
+MEMBER_EMAIL="${MEMBER_USERNAME}@example.com"
+MEMBER_PASSWORD="password123"
+
+member_register_data=$(cat <<EOF
+{
+  "username": "$MEMBER_USERNAME",
+  "password": "$MEMBER_PASSWORD",
+  "email": "$MEMBER_EMAIL",
+  "display_name": "Miembro Replicación"
+}
+EOF
+)
+
+member_register_resp=$(curl -s -X POST "http://localhost:${LEADER_PORT}/register" \
+  -H "Content-Type: application/json" \
+  -d "$member_register_data")
+
+if echo "$member_register_resp" | grep -q "$MEMBER_USERNAME"; then
+    echo -e "  ${GREEN}✅${NC} Usuario miembro creado: $MEMBER_USERNAME"
+else
+    echo -e "  ${RED}❌${NC} Error al crear usuario miembro: $member_register_resp"
+    exit 1
+fi
+
+# Obtener ID del grupo de prueba desde la BD del líder
+GROUP_ID=$(query_db "$LEADER_NODE" "SELECT id FROM groups WHERE name='$GROUP_NAME' LIMIT 1;" 2>/dev/null || echo "ERROR")
+if [ "$GROUP_ID" = "ERROR" ] || [ -z "$GROUP_ID" ]; then
+    echo -e "  ${RED}❌${NC} No se pudo obtener el ID del grupo de prueba"
+    exit 1
+fi
+
+member_add_data=$(cat <<EOF
+{
+  "username": "$MEMBER_USERNAME",
+  "rank": 0
+}
+EOF
+)
+
+member_add_resp=$(json_request "POST" "http://localhost:${LEADER_PORT}/api/groups/${GROUP_ID}/members" "$member_add_data" "$TOKEN")
+
+if echo "$member_add_resp" | grep -q '"status"'; then
+    echo -e "  ${GREEN}✅${NC} Miembro añadido al grupo en el líder"
+else
+    echo -e "  ${RED}❌${NC} Error al añadir miembro al grupo: $member_add_resp"
+    exit 1
+fi
+
+# Esperar a que la operación se replique
+sleep 3
+
+ALL_MEMBERS_REPLICATED=true
+
+for i in "${!NODES[@]}"; do
+    node=${NODES[$i]}
+    port=${PORTS[$i]}
+
+    if docker ps --format '{{.Names}}' | grep -q "^${node}$"; then
+        member_count=$(query_db "$node" "SELECT COUNT(*) FROM group_members gm JOIN users u ON gm.user_id = u.id JOIN groups g ON gm.group_id = g.id WHERE g.name='$GROUP_NAME' AND u.username='$MEMBER_USERNAME';" 2>/dev/null || echo "ERROR")
+        if [ "$member_count" = "1" ]; then
+            echo -e "  ${GREEN}✅${NC} $node (puerto $port): miembro encontrado en el grupo"
+        else
+            echo -e "  ${RED}❌${NC} $node (puerto $port): miembro NO encontrado (count: $member_count)"
+            ALL_MEMBERS_REPLICATED=false
+        fi
+    fi
+done
+
+if [ "$ALL_MEMBERS_REPLICATED" = false ]; then
+    echo -e "${RED}❌ La replicación del miembro de grupo falló en algunos nodos${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Miembro de grupo replicado correctamente en todos los nodos${NC}"
+echo ""
+
+# ============================================
 # Resumen final
 # ============================================
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
@@ -411,6 +493,7 @@ echo "  - Líder: $LEADER_NODE (puerto $LEADER_PORT)"
 echo "  - Usuario de prueba: $TEST_USERNAME (ID: $USER_ID)"
 echo "  - Cita de prueba: ID $APPT_ID"
 echo "  - Grupo de prueba: $GROUP_NAME"
+echo "  - Miembro de grupo: $MEMBER_USERNAME"
 echo "  - Replicación: ${GREEN}✅ FUNCIONANDO${NC}"
 echo ""
 echo -e "${BLUE}Para verificar manualmente:${NC}"
