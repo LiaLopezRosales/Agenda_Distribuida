@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -446,6 +447,50 @@ func (c *ConsensusImpl) loadLogEntriesFrom(startIdx int64) ([]LogEntry, error) {
 	return out, nil
 }
 
+// recalculateCommitIndex recomputes the commit index on the leader based on
+// the matchIdx of all peers, following the Raft majority rule. It is a no-op
+// on followers.
+func (c *ConsensusImpl) recalculateCommitIndex() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.role != roleLeader {
+		return
+	}
+
+	lastIdx, _, err := c.lastIndexTerm()
+	if err != nil || lastIdx == 0 {
+		return
+	}
+
+	peers := c.peers.ListPeers()
+	// Collect match indexes: leader's own last index plus followers' matchIdx
+	idxs := make([]int64, 0, len(peers)+1)
+	idxs = append(idxs, lastIdx)
+	for _, id := range peers {
+		if id == c.nodeID {
+			continue
+		}
+		if mi, ok := c.matchIdx[id]; ok {
+			idxs = append(idxs, mi)
+		}
+	}
+	if len(idxs) == 0 {
+		return
+	}
+
+	// Sort ascending to find the index held by a majority
+	sort.Slice(idxs, func(i, j int) bool { return idxs[i] < idxs[j] })
+	totalNodes := len(peers) + 1
+	majority := (totalNodes / 2) + 1
+	candidate := idxs[len(idxs)-majority]
+
+	if candidate > c.state.CommitIndex {
+		c.state.CommitIndex = candidate
+		_ = c.persistMeta("commitIndex", c.state.CommitIndex)
+		c.log(slog.LevelInfo, "commit_index_advanced", "commit_index", c.state.CommitIndex)
+	}
+}
+
 // small utils
 func intToString(v int64) string { return fmtInt(v) }
 
@@ -614,31 +659,112 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 			continue
 		}
 		go func(pid string) {
-			// Determine from which index this follower needs entries
-			c.mu.RLock()
-			ni, ok := c.nextIdx[pid]
-			if !ok || ni <= 0 {
-				ni = lastIdx + 1 // nothing to send yet
-			}
-			c.mu.RUnlock()
+			// Try to catch up this follower with a small number of internal retries,
+			// adjusting nextIdx on each failure. This improves robustness without
+			// changing the external majority/timeout behavior.
+			const perPeerMaxRetries = 5
+			for attempt := 0; attempt < perPeerMaxRetries; attempt++ {
+				// Determine from which index this follower currently needs entries
+				c.mu.RLock()
+				ni, ok := c.nextIdx[pid]
+				if !ok || ni <= 0 {
+					ni = lastIdx + 1 // nothing to send yet
+				}
+				c.mu.RUnlock()
 
-			if ni > lastIdx {
-				// Leader cree que el follower está al día: enviar AppendEntries estilo heartbeat.
-				// Si el follower rechaza por inconsistencia de log, debemos decrementar nextIdx
-				// para forzar un catch-up en siguientes rondas.
-				prevIdx := lastIdx
+				// Case 1: leader thinks follower is up-to-date (heartbeat-style AppendEntries)
+				if ni > lastIdx {
+					prevIdx := lastIdx
+					prevTerm, _ := c.logTermAt(prevIdx)
+					req := AppendEntriesRequest{
+						Term:         term,
+						LeaderID:     c.nodeID,
+						PrevLogIndex: prevIdx,
+						PrevLogTerm:  prevTerm,
+						Entries:      nil,
+						LeaderCommit: leaderCommit,
+					}
+					payload, _ := json.Marshal(req)
+					respBody, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
+					if err != nil {
+						// Network/HTTP error: give this follower a chance in next heartbeat/broadcast
+						ch <- result{success: false, term: 0}
+						return
+					}
+					var resp AppendEntriesResponse
+					if err := json.Unmarshal(respBody, &resp); err != nil {
+						ch <- result{success: false, term: 0}
+						return
+					}
+					if resp.Term > term {
+						c.mu.Lock()
+						if resp.Term > c.state.CurrentTerm {
+							c.state.CurrentTerm = resp.Term
+							_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
+							c.role = roleFollower
+							c.peers.SetLeader("")
+							c.log(slog.LevelWarn, "leader_demoted_higher_term", "follower_term", resp.Term, "our_term", term)
+							c.audit("demotion", "leader demoted due to higher term from follower", map[string]any{"follower_term": resp.Term, "our_term": term})
+						}
+						c.mu.Unlock()
+						ch <- result{success: false, term: resp.Term}
+						return
+					}
+					if resp.Success {
+						// Update matchIdx/nextIdx if follower reports progress
+						c.mu.Lock()
+						if resp.MatchIndex > 0 {
+							c.matchIdx[pid] = resp.MatchIndex
+							c.nextIdx[pid] = resp.MatchIndex + 1
+						} else {
+							c.matchIdx[pid] = lastIdx
+							c.nextIdx[pid] = lastIdx + 1
+						}
+						c.mu.Unlock()
+						ch <- result{success: true, term: resp.Term}
+						return
+					}
+					// Rechazo por inconsistencia: retroceder nextIdx para este follower y reintentar
+					c.mu.Lock()
+					curNext := c.nextIdx[pid]
+					if curNext <= 1 {
+						c.nextIdx[pid] = 1
+					} else {
+						c.nextIdx[pid] = curNext - 1
+					}
+					c.mu.Unlock()
+					continue
+				}
+
+				// Case 2: follower is behind; send log suffix starting at nextIdx
+				ents, err := c.loadLogEntriesFrom(ni)
+				if err != nil {
+					ch <- result{success: false, term: 0}
+					return
+				}
+				if len(ents) == 0 {
+					// Nothing to send; treat as success (follower already caught up)
+					c.mu.Lock()
+					c.matchIdx[pid] = lastIdx
+					c.nextIdx[pid] = lastIdx + 1
+					c.mu.Unlock()
+					ch <- result{success: true, term: term}
+					return
+				}
+				prevIdx := ni - 1
 				prevTerm, _ := c.logTermAt(prevIdx)
 				req := AppendEntriesRequest{
 					Term:         term,
 					LeaderID:     c.nodeID,
 					PrevLogIndex: prevIdx,
 					PrevLogTerm:  prevTerm,
-					Entries:      nil,
+					Entries:      ents,
 					LeaderCommit: leaderCommit,
 				}
 				payload, _ := json.Marshal(req)
 				respBody, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
 				if err != nil {
+					// Network or HTTP error, do not advance nextIdx; let outer timeout handle it
 					ch <- result{success: false, term: 0}
 					return
 				}
@@ -662,10 +788,21 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 					return
 				}
 				if resp.Success {
+					// Follower accepted entries: advance nextIdx and matchIdx
+					c.mu.Lock()
+					if resp.MatchIndex > 0 {
+						c.matchIdx[pid] = resp.MatchIndex
+						c.nextIdx[pid] = resp.MatchIndex + 1
+					} else {
+						// Fallback: assume we synced up to lastIdx
+						c.matchIdx[pid] = lastIdx
+						c.nextIdx[pid] = lastIdx + 1
+					}
+					c.mu.Unlock()
 					ch <- result{success: true, term: resp.Term}
 					return
 				}
-				// Rechazo por inconsistencia: retroceder nextIdx para este follower
+				// Rejection due to log inconsistency: decrement nextIdx and retry
 				c.mu.Lock()
 				curNext := c.nextIdx[pid]
 				if curNext <= 1 {
@@ -674,82 +811,10 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 					c.nextIdx[pid] = curNext - 1
 				}
 				c.mu.Unlock()
-				ch <- result{success: false, term: resp.Term}
-				return
+				// loop will retry with updated nextIdx
 			}
-
-			// Load suffix of log starting at nextIndex for this follower
-			ents, err := c.loadLogEntriesFrom(ni)
-			if err != nil {
-				ch <- result{success: false, term: 0}
-				return
-			}
-			if len(ents) == 0 {
-				// Nothing to send
-				ch <- result{success: true, term: term}
-				return
-			}
-			prevIdx := ni - 1
-			prevTerm, _ := c.logTermAt(prevIdx)
-			req := AppendEntriesRequest{
-				Term:         term,
-				LeaderID:     c.nodeID,
-				PrevLogIndex: prevIdx,
-				PrevLogTerm:  prevTerm,
-				Entries:      ents,
-				LeaderCommit: leaderCommit,
-			}
-			payload, _ := json.Marshal(req)
-			respBody, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
-			if err != nil {
-				// Network or HTTP error, do not advance nextIndex
-				ch <- result{success: false, term: 0}
-				return
-			}
-			var resp AppendEntriesResponse
-			if err := json.Unmarshal(respBody, &resp); err != nil {
-				ch <- result{success: false, term: 0}
-				return
-			}
-			if resp.Term > term {
-				c.mu.Lock()
-				if resp.Term > c.state.CurrentTerm {
-					c.state.CurrentTerm = resp.Term
-					_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
-					c.role = roleFollower
-					c.peers.SetLeader("")
-					c.log(slog.LevelWarn, "leader_demoted_higher_term", "follower_term", resp.Term, "our_term", term)
-					c.audit("demotion", "leader demoted due to higher term from follower", map[string]any{"follower_term": resp.Term, "our_term": term})
-				}
-				c.mu.Unlock()
-				ch <- result{success: false, term: resp.Term}
-				return
-			}
-			if resp.Success {
-				// Follower accepted entries: advance nextIdx and matchIdx
-				c.mu.Lock()
-				if resp.MatchIndex > 0 {
-					c.matchIdx[pid] = resp.MatchIndex
-					c.nextIdx[pid] = resp.MatchIndex + 1
-				} else {
-					// Fallback: assume we synced up to lastIdx
-					c.matchIdx[pid] = lastIdx
-					c.nextIdx[pid] = lastIdx + 1
-				}
-				c.mu.Unlock()
-				ch <- result{success: true, term: resp.Term}
-				return
-			}
-			// Rejection due to log inconsistency: decrement nextIdx to try earlier entries next time
-			c.mu.Lock()
-			curNext := c.nextIdx[pid]
-			if curNext <= 1 {
-				c.nextIdx[pid] = 1
-			} else {
-				c.nextIdx[pid] = curNext - 1
-			}
-			c.mu.Unlock()
-			ch <- result{success: false, term: resp.Term}
+			// Exhausted retries for this follower
+			ch <- result{success: false, term: 0}
 		}(id)
 	}
 	timeout := time.After(3 * time.Second)
@@ -804,14 +869,9 @@ func (c *ConsensusImpl) replicateAndCommit(entry LogEntry) error {
 		break
 	}
 
-	// Only update commit index after majority has acknowledged
-	c.mu.Lock()
-	if entry.Index > c.state.CommitIndex {
-		c.state.CommitIndex = entry.Index
-		_ = c.persistMeta("commitIndex", c.state.CommitIndex)
-		c.log(slog.LevelInfo, "entry_committed", "index", entry.Index, "op", entry.Op)
-	}
-	c.mu.Unlock()
+	// Recalculate commit index on the leader after majority has acknowledged.
+	// This uses matchIdx and follows the Raft majority rule.
+	c.recalculateCommitIndex()
 
 	// Apply committed entries to state machine
 	if err := c.applyCommitted(); err != nil {
