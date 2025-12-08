@@ -45,6 +45,10 @@ type ConsensusImpl struct {
 	// networking
 	httpClient *http.Client
 	hmacSecret string
+
+	// Per-peer replication state (Raft-like): maintained on the leader
+	nextIdx  map[string]int64 // For each follower, index of the next log entry to send
+	matchIdx map[string]int64 // For each follower, index of highest log entry known to be replicated
 }
 
 func NewConsensus(nodeID string, storage *Storage, peers PeerStore) *ConsensusImpl {
@@ -57,6 +61,8 @@ func NewConsensus(nodeID string, storage *Storage, peers PeerStore) *ConsensusIm
 		hmacSecret:         os.Getenv("CLUSTER_HMAC_SECRET"),
 		logger:             Logger(),
 		resetElectionTimer: make(chan struct{}, 1),
+		nextIdx:            make(map[string]int64),
+		matchIdx:           make(map[string]int64),
 	}
 }
 
@@ -420,6 +426,26 @@ func (c *ConsensusImpl) logTermAt(idx int64) (int64, error) {
 	return term.Int64, nil
 }
 
+// loadLogEntriesFrom returns all log entries starting at index >= startIdx, ordered by idx ASC.
+func (c *ConsensusImpl) loadLogEntriesFrom(startIdx int64) ([]LogEntry, error) {
+	rows, err := c.storage.db.Query(`SELECT term, idx, event_id, aggregate, aggregate_id, op, payload, ts FROM raft_log WHERE idx>=? ORDER BY idx ASC`, startIdx)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LogEntry
+	for rows.Next() {
+		var e LogEntry
+		var ts time.Time
+		if err := rows.Scan(&e.Term, &e.Index, &e.EventID, &e.Aggregate, &e.AggregateID, &e.Op, &e.Payload, &ts); err != nil {
+			return nil, err
+		}
+		e.Timestamp = ts
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 // small utils
 func intToString(v int64) string { return fmtInt(v) }
 
@@ -495,40 +521,89 @@ func (c *ConsensusImpl) applyCommitted() error {
 // --- networking / majority replication ---
 
 func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, leaderCommit int64) error {
-	// Compute PrevLogIndex/PrevLogTerm correctly depending on whether
-	// we are sending new entries or just a heartbeat.
-	var prevIdx, prevTerm int64
-	if len(entries) > 0 {
-		// For new entries, PrevLogIndex is just before the first entry in the batch
-		first := entries[0]
-		if first.Index > 1 {
-			prevIdx = first.Index - 1
-			// Best-effort lookup; if it fails, leave term=0 and let follower reject if needed
-			if t, err := c.logTermAt(prevIdx); err == nil {
-				prevTerm = t
-			}
-		} else {
-			// First entry in log has no previous
-			prevIdx = 0
-			prevTerm = 0
+	peers := c.peers.ListPeers()
+	successes := 1               // leader counts self
+	totalNodes := len(peers) + 1 // include self
+	majority := (totalNodes / 2) + 1
+
+	// Heartbeat-only path: keep simple behavior using last index/term
+	if len(entries) == 0 {
+		prevIdx, prevTerm, _ := c.lastIndexTerm()
+		req := AppendEntriesRequest{
+			Term:         term,
+			LeaderID:     c.nodeID,
+			PrevLogIndex: prevIdx,
+			PrevLogTerm:  prevTerm,
+			Entries:      nil,
+			LeaderCommit: leaderCommit,
 		}
-	} else {
-		// Heartbeat with no entries: use last index/term from our log
-		prevIdx, prevTerm, _ = c.lastIndexTerm()
+		payload, _ := json.Marshal(req)
+		type result struct {
+			success bool
+			term    int64
+		}
+		ch := make(chan result, len(peers))
+		for _, id := range peers {
+			if id == c.nodeID {
+				continue
+			}
+			go func(pid string) {
+				respBody, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
+				if err != nil {
+					ch <- result{success: false, term: 0}
+					return
+				}
+				var resp AppendEntriesResponse
+				if err := json.Unmarshal(respBody, &resp); err != nil {
+					ch <- result{success: false, term: 0}
+					return
+				}
+				// If follower has higher term, we need to become follower
+				if resp.Term > term {
+					c.mu.Lock()
+					if resp.Term > c.state.CurrentTerm {
+						c.state.CurrentTerm = resp.Term
+						_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
+						c.role = roleFollower
+						c.peers.SetLeader("")
+						c.log(slog.LevelWarn, "leader_demoted_higher_term", "follower_term", resp.Term, "our_term", term)
+						c.audit("demotion", "leader demoted due to higher term from follower", map[string]any{"follower_term": resp.Term, "our_term": term})
+					}
+					c.mu.Unlock()
+					ch <- result{success: false, term: resp.Term}
+					return
+				}
+				ch <- result{success: resp.Success, term: resp.Term}
+			}(id)
+		}
+		timeout := time.After(3 * time.Second)
+		for pending := len(peers); pending > 0; pending-- {
+			select {
+			case res := <-ch:
+				if res.success {
+					successes++
+					c.log(slog.LevelDebug, "append_entries_success", "successes", successes, "majority", majority)
+				}
+				if successes >= majority {
+					c.log(slog.LevelInfo, "append_entries_majority_achieved", "successes", successes)
+					return nil
+				}
+			case <-timeout:
+				c.log(slog.LevelWarn, "append_entries_timeout", "successes", successes, "majority", majority)
+				return errors.New("append majority failed")
+			}
+		}
+		if successes >= majority {
+			return nil
+		}
+		c.log(slog.LevelError, "append_entries_no_majority", "successes", successes, "needed", majority)
+		return errors.New("append majority failed")
 	}
 
-	req := AppendEntriesRequest{
-		Term:         term,
-		LeaderID:     c.nodeID,
-		PrevLogIndex: prevIdx,
-		PrevLogTerm:  prevTerm,
-		Entries:      entries,
-		LeaderCommit: leaderCommit,
-	}
-	payload, _ := json.Marshal(req)
-	successes := 1 // leader counts self
-	peers := c.peers.ListPeers()
-	totalNodes := len(peers) + 1 // Include self in total count
+	// Replication path with new entries: use per-peer nextIndex/matchIndex to catch up followers.
+	// We ignore the specific entries slice and instead send the suffix of our log needed by each peer.
+	lastIdx, _, _ := c.lastIndexTerm()
+
 	type result struct {
 		success bool
 		term    int64
@@ -539,8 +614,95 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 			continue
 		}
 		go func(pid string) {
+			// Determine from which index this follower needs entries
+			c.mu.RLock()
+			ni, ok := c.nextIdx[pid]
+			if !ok || ni <= 0 {
+				ni = lastIdx + 1 // nothing to send yet
+			}
+			c.mu.RUnlock()
+
+			if ni > lastIdx {
+				// Leader cree que el follower está al día: enviar AppendEntries estilo heartbeat.
+				// Si el follower rechaza por inconsistencia de log, debemos decrementar nextIdx
+				// para forzar un catch-up en siguientes rondas.
+				prevIdx := lastIdx
+				prevTerm, _ := c.logTermAt(prevIdx)
+				req := AppendEntriesRequest{
+					Term:         term,
+					LeaderID:     c.nodeID,
+					PrevLogIndex: prevIdx,
+					PrevLogTerm:  prevTerm,
+					Entries:      nil,
+					LeaderCommit: leaderCommit,
+				}
+				payload, _ := json.Marshal(req)
+				respBody, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
+				if err != nil {
+					ch <- result{success: false, term: 0}
+					return
+				}
+				var resp AppendEntriesResponse
+				if err := json.Unmarshal(respBody, &resp); err != nil {
+					ch <- result{success: false, term: 0}
+					return
+				}
+				if resp.Term > term {
+					c.mu.Lock()
+					if resp.Term > c.state.CurrentTerm {
+						c.state.CurrentTerm = resp.Term
+						_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
+						c.role = roleFollower
+						c.peers.SetLeader("")
+						c.log(slog.LevelWarn, "leader_demoted_higher_term", "follower_term", resp.Term, "our_term", term)
+						c.audit("demotion", "leader demoted due to higher term from follower", map[string]any{"follower_term": resp.Term, "our_term": term})
+					}
+					c.mu.Unlock()
+					ch <- result{success: false, term: resp.Term}
+					return
+				}
+				if resp.Success {
+					ch <- result{success: true, term: resp.Term}
+					return
+				}
+				// Rechazo por inconsistencia: retroceder nextIdx para este follower
+				c.mu.Lock()
+				curNext := c.nextIdx[pid]
+				if curNext <= 1 {
+					c.nextIdx[pid] = 1
+				} else {
+					c.nextIdx[pid] = curNext - 1
+				}
+				c.mu.Unlock()
+				ch <- result{success: false, term: resp.Term}
+				return
+			}
+
+			// Load suffix of log starting at nextIndex for this follower
+			ents, err := c.loadLogEntriesFrom(ni)
+			if err != nil {
+				ch <- result{success: false, term: 0}
+				return
+			}
+			if len(ents) == 0 {
+				// Nothing to send
+				ch <- result{success: true, term: term}
+				return
+			}
+			prevIdx := ni - 1
+			prevTerm, _ := c.logTermAt(prevIdx)
+			req := AppendEntriesRequest{
+				Term:         term,
+				LeaderID:     c.nodeID,
+				PrevLogIndex: prevIdx,
+				PrevLogTerm:  prevTerm,
+				Entries:      ents,
+				LeaderCommit: leaderCommit,
+			}
+			payload, _ := json.Marshal(req)
 			respBody, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/append-entries", payload)
 			if err != nil {
+				// Network or HTTP error, do not advance nextIndex
 				ch <- result{success: false, term: 0}
 				return
 			}
@@ -549,7 +711,6 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 				ch <- result{success: false, term: 0}
 				return
 			}
-			// If follower has higher term, we need to become follower
 			if resp.Term > term {
 				c.mu.Lock()
 				if resp.Term > c.state.CurrentTerm {
@@ -564,11 +725,34 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 				ch <- result{success: false, term: resp.Term}
 				return
 			}
-			ch <- result{success: resp.Success, term: resp.Term}
+			if resp.Success {
+				// Follower accepted entries: advance nextIdx and matchIdx
+				c.mu.Lock()
+				if resp.MatchIndex > 0 {
+					c.matchIdx[pid] = resp.MatchIndex
+					c.nextIdx[pid] = resp.MatchIndex + 1
+				} else {
+					// Fallback: assume we synced up to lastIdx
+					c.matchIdx[pid] = lastIdx
+					c.nextIdx[pid] = lastIdx + 1
+				}
+				c.mu.Unlock()
+				ch <- result{success: true, term: resp.Term}
+				return
+			}
+			// Rejection due to log inconsistency: decrement nextIdx to try earlier entries next time
+			c.mu.Lock()
+			curNext := c.nextIdx[pid]
+			if curNext <= 1 {
+				c.nextIdx[pid] = 1
+			} else {
+				c.nextIdx[pid] = curNext - 1
+			}
+			c.mu.Unlock()
+			ch <- result{success: false, term: resp.Term}
 		}(id)
 	}
-	majority := (totalNodes / 2) + 1
-	timeout := time.After(3 * time.Second) // Increased timeout for network latency
+	timeout := time.After(3 * time.Second)
 	for pending := len(peers); pending > 0; pending-- {
 		select {
 		case res := <-ch:
@@ -581,7 +765,7 @@ func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, l
 				return nil
 			}
 		case <-timeout:
-			c.log(slog.LevelWarn, "append_entries_timeout", "pending", pending, "successes", successes, "majority", majority)
+			c.log(slog.LevelWarn, "append_entries_timeout", "successes", successes, "majority", majority)
 			return errors.New("append majority failed")
 		}
 	}
@@ -676,6 +860,17 @@ func (c *ConsensusImpl) startElection() error {
 				c.role = roleLeader
 				c.peers.SetLeader(c.nodeID)
 				c.heartbeatFailures = 0 // Reset failure counter when becoming leader
+				// Initialize per-peer replication state
+				lastIdx, _, _ := c.lastIndexTerm()
+				c.nextIdx = make(map[string]int64)
+				c.matchIdx = make(map[string]int64)
+				for _, id := range peers {
+					if id == c.nodeID {
+						continue
+					}
+					c.nextIdx[id] = lastIdx + 1
+					c.matchIdx[id] = 0
+				}
 				c.mu.Unlock()
 				c.log(slog.LevelInfo, "election_won", "term", term)
 				c.audit("election", "node became leader", map[string]any{"term": term})
@@ -691,6 +886,17 @@ func (c *ConsensusImpl) startElection() error {
 		c.role = roleLeader
 		c.peers.SetLeader(c.nodeID)
 		c.heartbeatFailures = 0 // Reset failure counter when becoming leader
+		// Initialize per-peer replication state
+		lastIdx, _, _ := c.lastIndexTerm()
+		c.nextIdx = make(map[string]int64)
+		c.matchIdx = make(map[string]int64)
+		for _, id := range peers {
+			if id == c.nodeID {
+				continue
+			}
+			c.nextIdx[id] = lastIdx + 1
+			c.matchIdx[id] = 0
+		}
 		c.mu.Unlock()
 		c.log(slog.LevelInfo, "election_won", "term", term)
 		c.audit("election", "node became leader", map[string]any{"term": term})
