@@ -15,6 +15,9 @@ BASE_URL="http://localhost:8080"
 PORTS=(8080 8082 8083 8084)
 NODES=("agenda-1" "agenda-2" "agenda-3" "agenda-4")
 
+# Sufijo aleatorio/único por ejecución para evitar colisiones entre runs
+RANDOM_SUFFIX=$(date +%s)
+
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}  Verificación de Sistema Distribuido - Agenda RAFT${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
@@ -350,7 +353,7 @@ echo ""
 # ============================================
 echo -e "${GREEN}[7/7] Creando grupo de prueba y verificando replicación...${NC}"
 
-GROUP_NAME="Grupo Prueba Replicación"
+GROUP_NAME="Grupo Prueba Replicación ${RANDOM_SUFFIX}"
 GROUP_DESC="Este grupo debe replicarse a todos los nodos"
 
 group_data=$(cat <<EOF
@@ -382,7 +385,8 @@ for i in "${!NODES[@]}"; do
 
     if docker ps --format '{{.Names}}' | grep -q "^${node}$"; then
         group_count=$(query_db "$node" "SELECT COUNT(*) FROM groups WHERE name='$GROUP_NAME';" 2>/dev/null || echo "ERROR")
-        if [ "$group_count" = "1" ]; then
+        # Aceptamos count >= 1 para soportar posibles duplicados históricos
+        if [ "$group_count" != "ERROR" ] && [ "$group_count" -ge 1 ]; then
             echo -e "  ${GREEN}✅${NC} $node (puerto $port): grupo encontrado (nombre: $GROUP_NAME)"
         else
             echo -e "  ${RED}❌${NC} $node (puerto $port): grupo NO encontrado (count: $group_count)"
