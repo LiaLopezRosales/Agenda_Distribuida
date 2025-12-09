@@ -23,7 +23,7 @@
      Term: 5 | Commit: 2 | Applied: 2 | Log entries: 2
 
 [0;32m[3/6] Creando usuario de prueba en el líder...[0m
-  [0;32m✅[0m Usuario creado: test_user_1765300393 (ID: 3)
+  [0;32m✅[0m Usuario creado: test_user_1765302041 (ID: 3)
   [0;32m✅[0m Token de autenticación obtenido
 
 [0;32m[4/6] Verificando replicación del usuario en todos los nodos...[0m
@@ -46,14 +46,14 @@
 
 [0;32m[7/7] Creando grupo de prueba y verificando replicación...[0m
   [0;32m✅[0m Grupo creado en el líder
-  [0;32m✅[0m agenda-1 (puerto 8080): grupo encontrado (nombre: Grupo Prueba Replicación 1765300391)
-  [0;32m✅[0m agenda-2 (puerto 8082): grupo encontrado (nombre: Grupo Prueba Replicación 1765300391)
-  [0;32m✅[0m agenda-3 (puerto 8083): grupo encontrado (nombre: Grupo Prueba Replicación 1765300391)
-  [0;32m✅[0m agenda-4 (puerto 8084): grupo encontrado (nombre: Grupo Prueba Replicación 1765300391)
+  [0;32m✅[0m agenda-1 (puerto 8080): grupo encontrado (nombre: Grupo Prueba Replicación 1765302039)
+  [0;32m✅[0m agenda-2 (puerto 8082): grupo encontrado (nombre: Grupo Prueba Replicación 1765302039)
+  [0;32m✅[0m agenda-3 (puerto 8083): grupo encontrado (nombre: Grupo Prueba Replicación 1765302039)
+  [0;32m✅[0m agenda-4 (puerto 8084): grupo encontrado (nombre: Grupo Prueba Replicación 1765302039)
 [0;32m✅ Grupo replicado correctamente en todos los nodos[0m
 
 [0;32m[8/8] Añadiendo miembro al grupo y verificando replicación...[0m
-  [0;32m✅[0m Usuario miembro creado: test_member_1765300391
+  [0;32m✅[0m Usuario miembro creado: test_member_1765302039
   [0;32m✅[0m Miembro añadido al grupo en el líder
   [0;32m✅[0m agenda-1 (puerto 8080): miembro encontrado en el grupo
   [0;32m✅[0m agenda-2 (puerto 8082): miembro encontrado en el grupo
@@ -98,19 +98,19 @@
 
 [0;32mResumen:[0m
   - Líder: agenda-1 (puerto 8080)
-  - Usuario de prueba: test_user_1765300393 (ID: 3)
+  - Usuario de prueba: test_user_1765302041 (ID: 3)
   - Cita de prueba: ID 3
-  - Grupo de prueba: Grupo Prueba Replicación 1765300391
-  - Miembro de grupo: test_member_1765300391
-  - Nuevo display_name: Usuario Replicado 1765300391
-  - Nuevo email: test_user_1765300393_1765300391@example.com
+  - Grupo de prueba: Grupo Prueba Replicación 1765302039
+  - Miembro de grupo: test_member_1765302039
+  - Nuevo display_name: Usuario Replicado 1765302039
+  - Nuevo email: test_user_1765302041_1765302039@example.com
   - Cita de invitación: ID 4
   - Replicación: \033[0;32m✅ FUNCIONANDO\033[0m
 
 [0;34mPara verificar manualmente:[0m
   - Ver estado RAFT: curl -s http://localhost:8080/raft/health | jq
-  - Ver agenda (citas): curl -s "http://localhost:8080/api/agenda?start=2025-01-01T00:00:00Z&end=2026-01-01T00:00:00Z" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY1MzAwMzkzIiwiZXhwIjoxNzY1Mzg2NzkzLCJpYXQiOjE3NjUzMDAzOTN9.Xji1zzrKP4vsZbSxYa026RytUtLQAU418Pxg9mW3GlU" | jq
-  - Ver cita específica: curl -s http://localhost:8080/api/appointments/3 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY1MzAwMzkzIiwiZXhwIjoxNzY1Mzg2NzkzLCJpYXQiOjE3NjUzMDAzOTN9.Xji1zzrKP4vsZbSxYa026RytUtLQAU418Pxg9mW3GlU" | jq
+  - Ver agenda (citas): curl -s "http://localhost:8080/api/agenda?start=2025-01-01T00:00:00Z&end=2026-01-01T00:00:00Z" -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY1MzAyMDQxIiwiZXhwIjoxNzY1Mzg4NDQxLCJpYXQiOjE3NjUzMDIwNDF9.ovAhvjjW8pF7KnPQ7jp4a_b095dsImryDd6FxrxLIzQ" | jq
+  - Ver cita específica: curl -s http://localhost:8080/api/appointments/3 -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6InRlc3RfdXNlcl8xNzY1MzAyMDQxIiwiZXhwIjoxNzY1Mzg4NDQxLCJpYXQiOjE3NjUzMDIwNDF9.ovAhvjjW8pF7KnPQ7jp4a_b095dsImryDd6FxrxLIzQ" | jq
 
 [1;33mNota:[0m Para consultar la BD directamente, necesitarías instalar sqlite3 en los contenedores
 

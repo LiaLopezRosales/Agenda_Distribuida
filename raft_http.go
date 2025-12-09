@@ -109,19 +109,16 @@ func LeaderWriteMiddleware(cons Consensus, leaderAddrResolver func(string) strin
 				return
 			}
 
-			// On followers, proxy write operations under /api/ to the leader
+			// On followers, proxy ALL operations under /api/ (reads and writes) to the leader
 			if strings.HasPrefix(path, "/api/") {
-				if r.Method == http.MethodPost || r.Method == http.MethodPut ||
-					r.Method == http.MethodDelete || r.Method == http.MethodPatch {
-					leaderID := cons.LeaderID()
-					if leaderID != "" {
-						addr := leaderAddrResolver(leaderID)
-						proxyRequestToLeader(w, r, addr)
-						return
-					}
+				leaderID := cons.LeaderID()
+				if leaderID != "" {
+					addr := leaderAddrResolver(leaderID)
+					proxyRequestToLeader(w, r, addr)
+					return
 				}
 			}
-			// Non-write or non-/api/ requests on followers are handled locally
+			// Non-/api/ requests on followers are handled locally
 			next.ServeHTTP(w, r)
 		})
 	}
