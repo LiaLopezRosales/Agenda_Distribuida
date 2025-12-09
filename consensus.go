@@ -215,8 +215,17 @@ func (c *ConsensusImpl) Propose(entry LogEntry) error {
 		c.log(slog.LevelError, "propose_replicate_failed", "err", err)
 		return err
 	}
-	c.log(slog.LevelInfo, "propose_committed", "index", entry.Index, "op", entry.Op)
-	c.audit("propose", "log entry committed", map[string]any{"index": entry.Index, "op": entry.Op})
+
+	// Phase 3: wait until this entry is actually applied on the leader state machine
+	// (LastApplied >= entry.Index). This strengthens the guarantee that any
+	// subsequent read on the leader will observe the effects of this write.
+	if err := c.waitForApplied(entry.Index, 5*time.Second); err != nil {
+		c.log(slog.LevelError, "propose_wait_applied_failed", "index", entry.Index, "err", err)
+		return err
+	}
+
+	c.log(slog.LevelInfo, "propose_committed_and_applied", "index", entry.Index, "op", entry.Op)
+	c.audit("propose", "log entry committed and applied", map[string]any{"index": entry.Index, "op": entry.Op})
 	return nil
 }
 
@@ -561,6 +570,31 @@ func (c *ConsensusImpl) applyCommitted() error {
 		c.mu.Unlock()
 	}
 	return nil
+}
+
+// waitForApplied blocks until the leader has applied at least up to targetIdx
+// (state.LastApplied >= targetIdx), or until timeout elapses, or the node stops
+// being leader. It is only meaningful to call this on the leader.
+func (c *ConsensusImpl) waitForApplied(targetIdx int64, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		c.mu.RLock()
+		lastApplied := c.state.LastApplied
+		role := c.role
+		c.mu.RUnlock()
+
+		if role != roleLeader {
+			return errors.New("lost leadership while waiting for apply")
+		}
+		if lastApplied >= targetIdx {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("timeout waiting for entry to be applied")
+		}
+		// Small sleep to avoid busy-waiting; applyCommitted is fast in practice.
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // --- networking / majority replication ---
