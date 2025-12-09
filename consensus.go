@@ -39,6 +39,7 @@ type ConsensusImpl struct {
 	cancel             context.CancelFunc
 	resetElectionTimer chan struct{} // channel to reset election timer
 	heartbeatFailures  int           // consecutive heartbeat failures (leader demotion)
+	failedElections    int           // consecutive failed elections (for backoff)
 
 	// apply callback to mutate the state machine (SQLite)
 	applier func(LogEntry) error
@@ -184,9 +185,21 @@ func (c *ConsensusImpl) loop(ctx context.Context) {
 }
 
 func (c *ConsensusImpl) electionTimeout() time.Duration {
-	// 5-7 seconds randomized (should be 5-10x heartbeat interval)
-	// This prevents premature elections due to network latency
-	return 5*time.Second + time.Duration(time.Now().UnixNano()%2_000_000_000)
+	// Base 5s + jitter (0-2s) + small backoff based on failed elections.
+	// This prevents premature or overly aggressive elections in noisy clusters.
+	c.mu.RLock()
+	fe := c.failedElections
+	c.mu.RUnlock()
+	if fe < 0 {
+		fe = 0
+	}
+	if fe > 3 {
+		fe = 3 // cap backoff
+	}
+	base := 5 * time.Second
+	backoff := time.Duration(fe) * 2 * time.Second
+	jitter := time.Duration(time.Now().UnixNano() % 2_000_000_000) // up to 2s
+	return base + backoff + jitter
 }
 
 func (c *ConsensusImpl) Propose(entry LogEntry) error {
@@ -326,9 +339,26 @@ func (c *ConsensusImpl) HandleRequestVote(req RequestVoteRequest) (RequestVoteRe
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if req.Term < c.state.CurrentTerm {
-		c.log(slog.LevelDebug, "request_vote_old_term", "candidate", req.CandidateID, "term", req.Term)
+		c.log(slog.LevelDebug, "request_vote_old_term", "candidate", req.CandidateID, "term", req.Term, "prevote", req.PreVote)
 		return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, nil
 	}
+
+	// Pre-vote requests do not mutate currentTerm or votedFor; they are only a probe.
+	if req.PreVote {
+		lastIdx, lastTerm, err := c.lastIndexTerm()
+		if err != nil {
+			return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, err
+		}
+		if lastTerm > req.LastLogTerm || (lastTerm == req.LastLogTerm && lastIdx > req.LastLogIndex) {
+			c.log(slog.LevelDebug, "prevote_log_outdated", "candidate", req.CandidateID)
+			return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: false}, nil
+		}
+		// Log is up-to-date enough; signal willingness without recording a vote.
+		c.log(slog.LevelDebug, "prevote_granted", "candidate", req.CandidateID, "term", req.Term)
+		return RequestVoteResponse{Term: c.state.CurrentTerm, VoteGranted: true}, nil
+	}
+
+	// Regular RequestVote: may advance term and record votedFor.
 	if req.Term > c.state.CurrentTerm {
 		c.state.CurrentTerm = req.Term
 		_ = c.persistMeta("currentTerm", c.state.CurrentTerm)
@@ -917,6 +947,17 @@ func (c *ConsensusImpl) replicateAndCommit(entry LogEntry) error {
 
 func (c *ConsensusImpl) startElection() error {
 	c.log(slog.LevelInfo, "election_started")
+	// First run a pre-vote to check if it is likely we can win an election.
+	if !c.runPreVote() {
+		c.mu.Lock()
+		if c.failedElections < 10 {
+			c.failedElections++
+		}
+		c.mu.Unlock()
+		c.log(slog.LevelWarn, "prevote_failed")
+		return errors.New("prevote failed")
+	}
+
 	c.mu.Lock()
 	c.state.CurrentTerm++
 	term := c.state.CurrentTerm
@@ -954,6 +995,7 @@ func (c *ConsensusImpl) startElection() error {
 				c.role = roleLeader
 				c.peers.SetLeader(c.nodeID)
 				c.heartbeatFailures = 0 // Reset failure counter when becoming leader
+				c.failedElections = 0   // Reset election backoff on success
 				// Initialize per-peer replication state
 				lastIdx, _, _ := c.lastIndexTerm()
 				c.nextIdx = make(map[string]int64)
@@ -971,6 +1013,11 @@ func (c *ConsensusImpl) startElection() error {
 				return nil
 			}
 		case <-timeout:
+			c.mu.Lock()
+			if c.failedElections < 10 {
+				c.failedElections++
+			}
+			c.mu.Unlock()
 			c.log(slog.LevelWarn, "election_timeout")
 			return errors.New("election timeout")
 		}
@@ -980,6 +1027,7 @@ func (c *ConsensusImpl) startElection() error {
 		c.role = roleLeader
 		c.peers.SetLeader(c.nodeID)
 		c.heartbeatFailures = 0 // Reset failure counter when becoming leader
+		c.failedElections = 0   // Reset election backoff on success
 		// Initialize per-peer replication state
 		lastIdx, _, _ := c.lastIndexTerm()
 		c.nextIdx = make(map[string]int64)
@@ -996,8 +1044,75 @@ func (c *ConsensusImpl) startElection() error {
 		c.audit("election", "node became leader", map[string]any{"term": term})
 		return nil
 	}
+	c.mu.Lock()
+	if c.failedElections < 10 {
+		c.failedElections++
+	}
+	c.mu.Unlock()
 	c.log(slog.LevelWarn, "election_failed", "votes", votes, "needed", majority)
 	return errors.New("not enough votes")
+}
+
+// runPreVote performs a Raft pre-vote round using the current term without
+// mutating local term or votedFor. It returns true if a majority of peers are
+// willing to grant a vote based on log up-to-date checks.
+func (c *ConsensusImpl) runPreVote() bool {
+	c.mu.RLock()
+	term := c.state.CurrentTerm
+	c.mu.RUnlock()
+
+	lastIdx, lastTerm, _ := c.lastIndexTerm()
+	req := RequestVoteRequest{Term: term, CandidateID: c.nodeID, LastLogIndex: lastIdx, LastLogTerm: lastTerm, PreVote: true}
+	payload, _ := json.Marshal(req)
+	peers := c.peers.ListPeers()
+	totalNodes := len(peers) + 1
+	majority := (totalNodes / 2) + 1
+	votes := 1 // local node is implicitly willing to vote for itself
+
+	type res struct {
+		ok bool
+	}
+	ch := make(chan res, len(peers))
+	for _, id := range peers {
+		if id == c.nodeID {
+			continue
+		}
+		go func(pid string) {
+			body, err := c.postJSONWithResponse("http://"+c.peers.ResolveAddr(pid)+"/raft/request-vote", payload)
+			if err != nil {
+				ch <- res{ok: false}
+				return
+			}
+			var resp RequestVoteResponse
+			if err := json.Unmarshal(body, &resp); err != nil {
+				ch <- res{ok: false}
+				return
+			}
+			ch <- res{ok: resp.VoteGranted}
+		}(id)
+	}
+	timeout := time.After(3 * time.Second)
+	for pending := len(peers) - 1; pending > 0; pending-- {
+		select {
+		case r := <-ch:
+			if r.ok {
+				votes++
+			}
+			if votes >= majority {
+				c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
+				return true
+			}
+		case <-timeout:
+			c.log(slog.LevelWarn, "prevote_timeout", "votes", votes, "majority", majority)
+			return false
+		}
+	}
+	if votes >= majority {
+		c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
+		return true
+	}
+	c.log(slog.LevelDebug, "prevote_no_majority", "votes", votes, "majority", majority)
+	return false
 }
 
 func (c *ConsensusImpl) lastIndexTerm() (int64, int64, error) {

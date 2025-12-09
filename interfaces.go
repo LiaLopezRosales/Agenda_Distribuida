@@ -90,6 +90,7 @@ type RequestVoteRequest struct {
 	CandidateID  string `json:"candidate_id"`
 	LastLogIndex int64  `json:"last_log_index"`
 	LastLogTerm  int64  `json:"last_log_term"`
+	PreVote      bool   `json:"pre_vote,omitempty"`
 }
 
 type RequestVoteResponse struct {
