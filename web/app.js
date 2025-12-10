@@ -18,6 +18,49 @@
     currentNotification: null
   };
 
+  // Known UI base URLs for simple client-side failover between nodes.
+  // Se resuelven dinámicamente en este orden de prioridad:
+  //  1) window.UI_BASES definido en el HTML como array de strings.
+  //  2) Valor en localStorage bajo la clave 'uiBases' (JSON array de strings).
+  //  3) window.location.origin como único valor (sin failover real).
+  let UI_BASES = [];
+  try {
+    if (Array.isArray(window.UI_BASES) && window.UI_BASES.length > 0) {
+      UI_BASES = window.UI_BASES.slice();
+    } else {
+      const stored = localStorage.getItem('uiBases');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          UI_BASES = parsed;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[UI FAILOVER] Error leyendo configuración dinámica de UI_BASES', e);
+  }
+  if (!UI_BASES || UI_BASES.length === 0) {
+    UI_BASES = [window.location.origin];
+  }
+
+  function failoverToAnotherUI() {
+    try {
+      const currentBase = window.location.origin;
+      const idx = UI_BASES.indexOf(currentBase);
+      // Elegir el siguiente base conocido distinto del actual
+      for (let i = 1; i <= UI_BASES.length; i++) {
+        const candidate = UI_BASES[(idx + i) % UI_BASES.length];
+        if (candidate && candidate !== currentBase) {
+          console.warn('[UI FAILOVER] Redirigiendo UI a', candidate);
+          window.location.href = candidate;
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('[UI FAILOVER] Error intentando redirigir a otra UI', e);
+    }
+  }
+
   const api = (path, opts = {}) => {
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
     if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
@@ -25,28 +68,77 @@
     console.log('[API] Request:', path, opts);
     return fetch(path, { ...opts, headers })
       .then(async (r) => {
-      const text = await r.text();
-      let body;
-      try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+        const text = await r.text();
+        let body;
+        try { body = text ? JSON.parse(text) : null; } catch { body = text; }
         // Log response
         console.log('[API] Response:', path, 'Status:', r.status, 'Body:', body);
-      if (!r.ok) { throw new Error(typeof body === 'string' ? body : JSON.stringify(body)); }
-      return body;
+        if (!r.ok) {
+          throw new Error(typeof body === 'string' ? body : JSON.stringify(body));
+        }
+        return body;
       })
       .catch((err) => {
         // Log network/fetch errors
-        console.error('[API] Fetch/network error:', path, err, err.stack);
+        console.error('[API] Fetch/network error:', path, err, err && err.stack);
+        // Intentar failover solo para errores de red (TypeError típicamente)
+        if (err instanceof TypeError) {
+          console.warn('[API] Network error detectado, intentando failover de UI');
+          failoverToAnotherUI();
+        }
         throw err;
-    });
+      });
   };
 
   // DOM helpers
   const $ = (id) => document.getElementById(id);
   const $$ = (selector) => document.querySelectorAll(selector);
 
+  // Descubrir dinámicamente posibles URLs de UI a partir del cluster.
+  // Usa /cluster/nodes y toma el campo "address" de cada nodo para construir http://address.
+  async function discoverUiBasesFromCluster() {
+    try {
+      const nodes = await api('/cluster/nodes');
+      if (!Array.isArray(nodes) || nodes.length === 0) return;
+
+      const bases = nodes
+        .map((n) => n.address || n.Address) // soportar mayúsculas si el JSON viene así
+        .filter((addr) => typeof addr === 'string' && addr.length > 0)
+        .map((addr) => {
+          // Si ya viene con esquema, respetarlo; si no, asumir http://
+          return addr.startsWith('http://') || addr.startsWith('https://')
+            ? addr
+            : `http://${addr}`;
+        });
+
+      if (bases.length === 0) return;
+
+      // Deduplicar y actualizar UI_BASES
+      const unique = Array.from(new Set(bases));
+      UI_BASES = unique;
+      try {
+        localStorage.setItem('uiBases', JSON.stringify(UI_BASES));
+      } catch (e) {
+        console.warn('[UI FAILOVER] No se pudo persistir uiBases en localStorage', e);
+      }
+      console.log('[UI FAILOVER] UI_BASES descubiertos desde /cluster/nodes:', UI_BASES);
+    } catch (e) {
+      console.warn('[UI FAILOVER] No se pudieron descubrir UI_BASES desde /cluster/nodes', e);
+    }
+  }
+
   // Initialize app
   function init() {
     setupEventListeners();
+    // Si solo tenemos el origin actual, intentar descubrir otras UIs desde el cluster.
+    try {
+      if (!UI_BASES || UI_BASES.length <= 1) {
+        // no esperamos el resultado de forma bloqueante; se actualizará en segundo plano
+        discoverUiBasesFromCluster();
+      }
+    } catch (e) {
+      console.warn('[UI FAILOVER] Error al lanzar discoverUiBasesFromCluster', e);
+    }
     loadStoredAuth();
     renderCalendar();
     loadGroups();

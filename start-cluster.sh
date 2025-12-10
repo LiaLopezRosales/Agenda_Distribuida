@@ -6,6 +6,10 @@ NETWORK_NAME="agenda_net"
 CLUSTER_SECRET="5c1d0c7f1d6a0c8a2e9f0b3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
 AUDIT_TOKEN="mi-token-auditoria-123"
 
+# IP del host vista desde los contenedores. Para entornos multi-host de 7 nodos,
+# esta IP deberá ajustarse explícitamente por máquina si hostname -I no es fiable.
+HOST_IP="$(hostname -I | awk '{print $1}')"
+
 echo "🚀 Iniciando cluster manual con red Swarm overlay attachable"
 
 # 1. Asegurar que Swarm está inicializado
@@ -32,8 +36,10 @@ docker rm -f agenda-1 agenda-2 agenda-3 agenda-4 2>/dev/null || true
 # 4. Crear logs
 mkdir -p logs
 
-# 5. PEERS — claves Raft correctas
-PEERS="agenda-1:8080,agenda-2:8080,agenda-3:8080,agenda-4:8080"
+# 5. PEERS / DISCOVERY_SEEDS basados en IP:puerto publicado del host
+# Esto permite que el consenso y el discovery sigan funcionando incluso si falla
+# el DNS interno de Docker para los nombres de contenedor.
+PEERS_IP="${HOST_IP}:8080,${HOST_IP}:8082,${HOST_IP}:8083,${HOST_IP}:8084"
 
 start_node () {
     local NAME=$1
@@ -48,7 +54,7 @@ start_node () {
         -p "$PORT:8080" \
         -v "$(pwd)/logs:/logs" \
         -e NODE_ID="$NAME" \
-        -e ADVERTISE_ADDR="$NAME:8080" \
+        -e ADVERTISE_ADDR="${HOST_IP}:$PORT" \
         -e HTTP_ADDR="0.0.0.0:8080" \
         -e DATABASE_DSN="file:agenda.db?cache=shared&_fk=1" \
         -e LOG_LEVEL="info" \
@@ -56,7 +62,7 @@ start_node () {
         -e LOG_DEST="file:/logs/$NAME.log" \
         -e CLUSTER_HMAC_SECRET="$CLUSTER_SECRET" \
         -e AUDIT_API_TOKEN="$AUDIT_TOKEN" \
-        -e DISCOVERY_SEEDS="$PEERS" \
+        -e DISCOVERY_SEEDS="$PEERS_IP" \
         "${IMAGE_NAME}"
 }
 

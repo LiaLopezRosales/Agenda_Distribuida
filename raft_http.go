@@ -80,21 +80,21 @@ func LeaderWriteMiddleware(cons Consensus, leaderAddrResolver func(string) strin
 
 			path := r.URL.Path
 
-			// Never redirect internal control endpoints or public auth endpoints that don't need consensus
-			// /login can be handled by any node (stateless auth), but /register should go through the leader
+			// Never redirect internal control endpoints or public endpoints that don't need consensus.
+			// /register and /login, en cambio, deben ir siempre al líder cuando hay consenso, para que
+			// todos los nodos validen credenciales y creen usuarios contra un único estado consistente.
 			if strings.HasPrefix(path, "/raft/") ||
 				strings.HasPrefix(path, "/cluster/") ||
 				strings.HasPrefix(path, "/ws") ||
-				strings.HasPrefix(path, "/ui/") ||
-				path == "/login" {
+				strings.HasPrefix(path, "/ui/") {
 				// Log for debugging
 				Logger().Debug("middleware_allowing_local", "path", path, "method", r.Method, "is_leader", cons != nil && cons.IsLeader())
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// For /register, enforce that writes go through the leader as well
-			if path == "/register" && cons != nil && !cons.IsLeader() {
+			// For /register and /login, enforce that they go through the leader when consensus is wired
+			if (path == "/register" || path == "/login") && cons != nil && !cons.IsLeader() {
 				leaderID := cons.LeaderID()
 				if leaderID != "" {
 					addr := leaderAddrResolver(leaderID)

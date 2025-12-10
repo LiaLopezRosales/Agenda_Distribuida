@@ -990,7 +990,9 @@ func (c *ConsensusImpl) startElection() error {
 			if ok {
 				votes++
 			}
-			if votes >= majority {
+			// In small clusters (2 or 3 nodes), allow a single reachable node to
+			// proceed as leader in degraded mode when other nodes are unavailable.
+			if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
 				c.mu.Lock()
 				c.role = roleLeader
 				c.peers.SetLeader(c.nodeID)
@@ -1022,7 +1024,7 @@ func (c *ConsensusImpl) startElection() error {
 			return errors.New("election timeout")
 		}
 	}
-	if votes >= majority {
+	if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
 		c.mu.Lock()
 		c.role = roleLeader
 		c.peers.SetLeader(c.nodeID)
@@ -1098,7 +1100,9 @@ func (c *ConsensusImpl) runPreVote() bool {
 			if r.ok {
 				votes++
 			}
-			if votes >= majority {
+			// In small clusters (2 or 3 nodes), allow a single reachable node to
+			// obtain a positive pre-vote result in degraded mode.
+			if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
 				c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
 				return true
 			}
@@ -1107,7 +1111,7 @@ func (c *ConsensusImpl) runPreVote() bool {
 			return false
 		}
 	}
-	if votes >= majority {
+	if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
 		c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
 		return true
 	}
