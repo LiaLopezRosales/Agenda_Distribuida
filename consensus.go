@@ -413,6 +413,54 @@ func (c *ConsensusImpl) loadState() error {
 	return nil
 }
 
+// activePeers returns the list of peer node IDs that are considered "active"
+// based on recent sightings in the cluster_nodes table. A node is active if
+// its LastSeen is within maxStale of the current time. The local node ID is
+// always excluded from the result. If the query fails or returns no rows, we
+// fall back to the static PeerStore snapshot.
+func (c *ConsensusImpl) activePeers(maxStale time.Duration) []string {
+	now := time.Now()
+	rows, err := c.storage.db.Query(`SELECT node_id, last_seen FROM cluster_nodes`)
+	if err != nil {
+		// Fallback: use PeerStore snapshot (which does not include self)
+		return c.peers.ListPeers()
+	}
+	defer rows.Close()
+
+	active := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		var ts time.Time
+		if err := rows.Scan(&id, &ts); err != nil {
+			continue
+		}
+		if id == c.nodeID {
+			continue
+		}
+		// If we have never seen a timestamp, or it is recent enough, treat as active
+		if ts.IsZero() || now.Sub(ts) <= maxStale {
+			active[id] = struct{}{}
+		}
+	}
+	if len(active) == 0 {
+		// Fallback: no recent cluster_nodes; use PeerStore snapshot
+		peers := c.peers.ListPeers()
+		out := make([]string, 0, len(peers))
+		for _, id := range peers {
+			if id == c.nodeID {
+				continue
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	out := make([]string, 0, len(active))
+	for id := range active {
+		out = append(out, id)
+	}
+	return out
+}
+
 func (c *ConsensusImpl) persistMeta(key string, val int64) error {
 	_, err := c.storage.db.Exec(`INSERT INTO raft_meta(key,value) VALUES(?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, intToString(val))
@@ -501,7 +549,8 @@ func (c *ConsensusImpl) recalculateCommitIndex() {
 		return
 	}
 
-	peers := c.peers.ListPeers()
+	// Use dynamically detected active peers (recently seen) for majority
+	peers := c.activePeers(15 * time.Second)
 	// Collect match indexes: leader's own last index plus followers' matchIdx
 	idxs := make([]int64, 0, len(peers)+1)
 	idxs = append(idxs, lastIdx)
@@ -630,7 +679,9 @@ func (c *ConsensusImpl) waitForApplied(targetIdx int64, timeout time.Duration) e
 // --- networking / majority replication ---
 
 func (c *ConsensusImpl) broadcastAppendEntries(term int64, entries []LogEntry, leaderCommit int64) error {
-	peers := c.peers.ListPeers()
+	// Use dynamically detected active peers (recently seen) to determine
+	// the effective cluster size for this broadcast.
+	peers := c.activePeers(15 * time.Second)
 	successes := 1               // leader counts self
 	totalNodes := len(peers) + 1 // include self
 	majority := (totalNodes / 2) + 1
@@ -970,7 +1021,8 @@ func (c *ConsensusImpl) startElection() error {
 	req := RequestVoteRequest{Term: term, CandidateID: c.nodeID, LastLogIndex: lastIdx, LastLogTerm: lastTerm}
 	payload, _ := json.Marshal(req)
 	votes := 1 // candidate votes for itself
-	peers := c.peers.ListPeers()
+	// Use dynamically detected active peers for election majority.
+	peers := c.activePeers(15 * time.Second)
 	totalNodes := len(peers) + 1 // Include self in total count
 	ch := make(chan bool, len(peers))
 	for _, id := range peers {
@@ -1066,7 +1118,8 @@ func (c *ConsensusImpl) runPreVote() bool {
 	lastIdx, lastTerm, _ := c.lastIndexTerm()
 	req := RequestVoteRequest{Term: term, CandidateID: c.nodeID, LastLogIndex: lastIdx, LastLogTerm: lastTerm, PreVote: true}
 	payload, _ := json.Marshal(req)
-	peers := c.peers.ListPeers()
+	// Use dynamically detected active peers for pre-vote majority.
+	peers := c.activePeers(15 * time.Second)
 	totalNodes := len(peers) + 1
 	majority := (totalNodes / 2) + 1
 	votes := 1 // local node is implicitly willing to vote for itself
