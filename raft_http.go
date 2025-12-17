@@ -14,11 +14,26 @@ import (
 
 func RegisterRaftHTTP(r *mux.Router, cons Consensus) {
 	r.HandleFunc("/raft/health", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"node_id":   cons.NodeID(),
 			"is_leader": cons.IsLeader(),
 			"leader":    cons.LeaderID(),
-		})
+		}
+		if impl, ok := cons.(*ConsensusImpl); ok {
+			impl.mu.RLock()
+			resp["term"] = impl.state.CurrentTerm
+			resp["commit_index"] = impl.state.CommitIndex
+			resp["last_applied"] = impl.state.LastApplied
+			if impl.applyErr != nil {
+				resp["apply_error"] = impl.applyErr.Error()
+				resp["apply_error_index"] = impl.applyErrIndex
+			} else {
+				resp["apply_error"] = ""
+				resp["apply_error_index"] = int64(0)
+			}
+			impl.mu.RUnlock()
+		}
+		json.NewEncoder(w).Encode(resp)
 	}).Methods("GET")
 
 	r.HandleFunc("/raft/request-vote", func(w http.ResponseWriter, r *http.Request) {

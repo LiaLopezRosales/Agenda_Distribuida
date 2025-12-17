@@ -249,6 +249,11 @@ func (s *Storage) UpdatePassword(userID int64, newPasswordHash string) error {
 	return err
 }
 
+func (s *Storage) ClearUserEmailIfMatches(userID int64, email string) error {
+	_, err := s.db.Exec(`UPDATE users SET email=NULL, updated_at=? WHERE id=? AND email=?`, time.Now(), userID, email)
+	return err
+}
+
 // ====================
 // Grupos y miembros
 // ====================
@@ -270,6 +275,10 @@ func (s *Storage) AddGroupMember(groupID, userID int64, rank int, addedBy *int64
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO group_members(group_id,user_id,rank,added_by,created_at)
 		VALUES(?,?,?,?,?)`, groupID, userID, rank, addedBy, time.Now())
 	return err
+}
+
+func (s *Storage) EnsureGroupMember(groupID, userID int64, rank int, addedBy *int64) error {
+	return s.AddGroupMember(groupID, userID, rank, addedBy)
 }
 
 func (s *Storage) GetMemberRank(groupID, userID int64) (int, error) {
@@ -440,6 +449,29 @@ func (s *Storage) GetParticipantByAppointmentAndUser(appointmentID, userID int64
 	return &p, nil
 }
 
+// FindAppointmentBySignature tries to find an existing (non-deleted) appointment by a
+// natural signature. This is used to provide best-effort idempotency for create ops.
+func (s *Storage) FindAppointmentBySignature(ownerID int64, groupID *int64, start, end time.Time, title string) (int64, error) {
+	if groupID == nil {
+		var id int64
+		err := s.db.QueryRow(`SELECT id FROM appointments
+			WHERE owner_id=? AND group_id IS NULL AND start_ts=? AND end_ts=? AND title=? AND deleted=0
+			ORDER BY id DESC LIMIT 1`, ownerID, start.Unix(), end.Unix(), title).Scan(&id)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return id, err
+	}
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM appointments
+		WHERE owner_id=? AND group_id=? AND start_ts=? AND end_ts=? AND title=? AND deleted=0
+		ORDER BY id DESC LIMIT 1`, ownerID, *groupID, start.Unix(), end.Unix(), title).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}
+
 // List all groups the user belongs to
 func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
 	rows, err := s.db.Query(`
@@ -519,6 +551,16 @@ func (s *Storage) AddParticipant(p *Participant) error {
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	return nil
+}
+
+func (s *Storage) EnsureParticipant(appointmentID, userID int64, status ApptStatus, isOptional bool) error {
+	if existing, err := s.GetParticipantByAppointmentAndUser(appointmentID, userID); err == nil && existing != nil {
+		if existing.Status != status {
+			return s.UpdateParticipantStatus(appointmentID, userID, status)
+		}
+		return nil
+	}
+	return s.AddParticipant(&Participant{AppointmentID: appointmentID, UserID: userID, Status: status, IsOptional: isOptional})
 }
 
 func (s *Storage) HasConflict(userID int64, start, end time.Time) (bool, error) {
@@ -702,6 +744,29 @@ func (s *Storage) AddNotification(n *Notification) error {
 	n.ID = id
 	n.CreatedAt = now
 	return nil
+}
+
+func (s *Storage) FindNotificationBySignature(userID int64, nType, payload string) (int64, error) {
+	row := s.db.QueryRow(`SELECT id FROM notifications WHERE user_id=? AND type=? AND payload=? ORDER BY id DESC LIMIT 1`, userID, nType, payload)
+	var id int64
+	if err := row.Scan(&id); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return id, nil
+}
+
+func (s *Storage) EnsureNotification(n *Notification) error {
+	id, err := s.FindNotificationBySignature(n.UserID, n.Type, n.Payload)
+	if err != nil {
+		return err
+	}
+	if id != 0 {
+		return nil
+	}
+	return s.AddNotification(n)
 }
 
 func (s *Storage) GetUserNotifications(userID int64) ([]Notification, error) {

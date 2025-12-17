@@ -3,26 +3,55 @@ package agendadistribuida
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
 const (
-	OpApptCreatePersonal = "appointment.create_personal"
-	OpApptCreateGroup    = "appointment.create_group"
-	OpApptUpdate         = "appointment.update"
-	OpApptDelete         = "appointment.delete"
-	OpUserCreate         = "user.create"
-	OpUserUpdateProfile  = "user.update_profile"
-	OpUserUpdatePassword = "user.update_password"
-	OpGroupCreate        = "group.create"
-	OpGroupUpdate        = "group.update"
-	OpGroupDelete        = "group.delete"
-	OpGroupMemberAdd     = "group.member_add"
-	OpGroupMemberUpdate  = "group.member_update"
-	OpGroupMemberRemove  = "group.member_remove"
-	OpInvitationAccept   = "invitation.accept"
-	OpInvitationReject   = "invitation.reject"
+	OpApptCreatePersonal            = "appointment.create_personal"
+	OpApptCreateGroup               = "appointment.create_group"
+	OpApptUpdate                    = "appointment.update"
+	OpApptDelete                    = "appointment.delete"
+	OpUserCreate                    = "user.create"
+	OpUserUpdateProfile             = "user.update_profile"
+	OpUserUpdatePassword            = "user.update_password"
+	OpGroupCreate                   = "group.create"
+	OpGroupUpdate                   = "group.update"
+	OpGroupDelete                   = "group.delete"
+	OpGroupMemberAdd                = "group.member_add"
+	OpGroupMemberUpdate             = "group.member_update"
+	OpGroupMemberRemove             = "group.member_remove"
+	OpInvitationAccept              = "invitation.accept"
+	OpInvitationReject              = "invitation.reject"
+	OpRepairUserClearEmailIfMatches = "repair.user.clear_email_if_matches"
+	OpRepairEnsureGroupMember       = "repair.group.ensure_member"
+	OpRepairEnsureParticipant       = "repair.appointment.ensure_participant"
+	OpRepairEnsureNotification      = "repair.notification.ensure"
 )
+
+type repairUserClearEmailPayload struct {
+	UserID int64  `json:"user_id"`
+	Email  string `json:"email"`
+}
+
+type repairEnsureGroupMemberPayload struct {
+	GroupID int64 `json:"group_id"`
+	UserID  int64 `json:"user_id"`
+	Rank    int   `json:"rank"`
+}
+
+type repairEnsureParticipantPayload struct {
+	AppointmentID int64      `json:"appointment_id"`
+	UserID        int64      `json:"user_id"`
+	Status        ApptStatus `json:"status"`
+	IsOptional    bool       `json:"is_optional"`
+}
+
+type repairEnsureNotificationPayload struct {
+	UserID  int64  `json:"user_id"`
+	Type    string `json:"type"`
+	Payload string `json:"payload"`
+}
 
 type userCreatePayload struct {
 	Username     string `json:"username"`
@@ -114,6 +143,19 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
+			if existingID, err := store.FindAppointmentBySignature(p.OwnerID, nil, p.Start, p.End, p.Title); err == nil && existingID != 0 {
+				if _, err := store.GetParticipantByAppointmentAndUser(existingID, p.OwnerID); err == nil {
+					return nil
+				}
+				part := &Participant{AppointmentID: existingID, UserID: p.OwnerID, Status: StatusAccepted}
+				if err := store.AddParticipant(part); err != nil {
+					if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+						return nil
+					}
+					return err
+				}
+				return nil
+			}
 			a := &Appointment{
 				Title:       p.Title,
 				Description: p.Description,
@@ -127,11 +169,23 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				return err
 			}
 			part := &Participant{AppointmentID: a.ID, UserID: p.OwnerID, Status: StatusAccepted}
-			return store.AddParticipant(part)
+			if _, err := store.GetParticipantByAppointmentAndUser(a.ID, p.OwnerID); err == nil {
+				return nil
+			}
+			if err := store.AddParticipant(part); err != nil {
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					return nil
+				}
+				return err
+			}
+			return nil
 		case OpApptCreateGroup:
 			var p apptCreateGroupPayload
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
+			}
+			if existingID, err := store.FindAppointmentBySignature(p.OwnerID, &p.GroupID, p.Start, p.End, p.Title); err == nil && existingID != 0 {
+				return nil
 			}
 			gID := p.GroupID
 			a := &Appointment{
@@ -184,6 +238,19 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
+			// Idempotency / safety: if the user already exists, treat as success.
+			if existing, err := store.GetUserByUsername(p.Username); err == nil && existing != nil {
+				return nil
+			}
+			// If email is already taken by a different user, this is a real conflict.
+			if p.Email != "" {
+				if byEmail, err := store.GetUserByEmail(p.Email); err == nil && byEmail != nil {
+					if byEmail.Username == p.Username {
+						return nil
+					}
+					return errors.New("user.create apply conflict: email already exists")
+				}
+			}
 			u := &User{
 				Username:     p.Username,
 				Email:        p.Email,
@@ -191,7 +258,23 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				ID:           p.ID,
 				DisplayName:  p.DisplayName,
 			}
-			return store.CreateUser(u)
+			if err := store.CreateUser(u); err != nil {
+				// If we lost a race or the row already exists, treat as success.
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					if existing, gerr := store.GetUserByUsername(p.Username); gerr == nil && existing != nil {
+						return nil
+					}
+					if p.Email != "" {
+						if byEmail, gerr := store.GetUserByEmail(p.Email); gerr == nil && byEmail != nil {
+							if byEmail.Username == p.Username {
+								return nil
+							}
+						}
+					}
+				}
+				return err
+			}
+			return nil
 		case OpUserUpdateProfile:
 			var p userUpdateProfilePayload
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
@@ -201,20 +284,46 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err != nil {
 				return err
 			}
+			desired := *u
 			if p.Username != nil {
-				u.Username = *p.Username
+				desired.Username = *p.Username
 			}
 			if p.Email != nil {
-				u.Email = *p.Email
+				desired.Email = *p.Email
 			}
 			if p.DisplayName != nil {
-				u.DisplayName = *p.DisplayName
+				desired.DisplayName = *p.DisplayName
 			}
-			return store.UpdateUser(u)
+			// Idempotency: if already at desired state, treat as success.
+			if desired.Username == u.Username && desired.Email == u.Email && desired.DisplayName == u.DisplayName {
+				return nil
+			}
+			u.Username = desired.Username
+			u.Email = desired.Email
+			u.DisplayName = desired.DisplayName
+			if err := store.UpdateUser(u); err != nil {
+				// If this fails due to UNIQUE constraints, re-check if state is already applied.
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					if fresh, gerr := store.GetUserByID(p.UserID); gerr == nil && fresh != nil {
+						if fresh.Username == desired.Username && fresh.Email == desired.Email && fresh.DisplayName == desired.DisplayName {
+							return nil
+						}
+					}
+					return errors.New("user.update_profile apply conflict: unique constraint")
+				}
+				return err
+			}
+			return nil
 		case OpUserUpdatePassword:
 			var p userUpdatePasswordPayload
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
+			}
+			// Idempotency: if password hash already matches, treat as success.
+			if u, err := store.GetUserByID(p.UserID); err == nil && u != nil {
+				if u.PasswordHash == p.PasswordHash {
+					return nil
+				}
 			}
 			return store.UpdatePassword(p.UserID, p.PasswordHash)
 		case OpGroupCreate:
@@ -259,6 +368,9 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
+			if _, err := store.GetGroupByID(p.GroupID); err != nil {
+				return nil
+			}
 			return store.DeleteGroup(p.GroupID)
 		case OpGroupMemberAdd:
 			var p groupMemberPayload
@@ -277,11 +389,25 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
-			return store.RemoveGroupMember(p.GroupID, p.UserID)
+			if err := store.RemoveGroupMember(p.GroupID, p.UserID); err != nil {
+				// Idempotency: removing a non-existing member is treated as success.
+				if strings.Contains(err.Error(), "member not found") {
+					return nil
+				}
+				return err
+			}
+			return nil
 		case OpInvitationAccept, OpInvitationReject:
 			var p invitationStatusPayload
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
+			}
+			// Idempotency: if participant already has this status, treat as success and
+			// avoid creating duplicate notifications.
+			if existing, err := store.GetParticipantByAppointmentAndUser(p.AppointmentID, p.UserID); err == nil && existing != nil {
+				if existing.Status == p.Status {
+					return nil
+				}
 			}
 			if err := store.UpdateParticipantStatus(p.AppointmentID, p.UserID, p.Status); err != nil {
 				return err
@@ -333,6 +459,36 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				Payload:   string(b),
 				CreatedAt: time.Now(),
 			})
+		case OpRepairUserClearEmailIfMatches:
+			var p repairUserClearEmailPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			return store.ClearUserEmailIfMatches(p.UserID, p.Email)
+		case OpRepairEnsureGroupMember:
+			var p repairEnsureGroupMemberPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			return store.EnsureGroupMember(p.GroupID, p.UserID, p.Rank, nil)
+		case OpRepairEnsureParticipant:
+			var p repairEnsureParticipantPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			if err := store.EnsureParticipant(p.AppointmentID, p.UserID, p.Status, p.IsOptional); err != nil {
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					return nil
+				}
+				return err
+			}
+			return nil
+		case OpRepairEnsureNotification:
+			var p repairEnsureNotificationPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			return store.EnsureNotification(&Notification{UserID: p.UserID, Type: p.Type, Payload: p.Payload, CreatedAt: time.Now()})
 
 		default:
 			return errors.New("unsupported op: " + e.Op)
