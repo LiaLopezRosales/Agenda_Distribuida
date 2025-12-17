@@ -243,3 +243,67 @@ func BuildEntryInvitationStatus(appointmentID, userID int64, status ApptStatus) 
 		Timestamp:   time.Now(),
 	}, nil
 }
+
+func BuildEntryRepairUserClearEmailIfMatches(userID int64, email string) (LogEntry, error) {
+	p := repairUserClearEmailPayload{UserID: userID, Email: email}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "repair_user",
+		AggregateID: strconv.FormatInt(userID, 10),
+		Op:          OpRepairUserClearEmailIfMatches,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
+func BuildEntryRepairEnsureGroupMember(groupID, userID int64, rank int) (LogEntry, error) {
+	p := repairEnsureGroupMemberPayload{GroupID: groupID, UserID: userID, Rank: rank}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "repair_group",
+		AggregateID: strconv.FormatInt(groupID, 10),
+		Op:          OpRepairEnsureGroupMember,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
+func BuildEntryRepairEnsureParticipant(appointmentID, userID int64, status ApptStatus, isOptional bool) (LogEntry, error) {
+	p := repairEnsureParticipantPayload{AppointmentID: appointmentID, UserID: userID, Status: status, IsOptional: isOptional}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "repair_appointment",
+		AggregateID: strconv.FormatInt(appointmentID, 10),
+		Op:          OpRepairEnsureParticipant,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
+func BuildEntryRepairEnsureNotification(userID int64, nType, payload string) (LogEntry, error) {
+	p := repairEnsureNotificationPayload{UserID: userID, Type: nType, Payload: payload}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "repair_notification",
+		AggregateID: strconv.FormatInt(userID, 10),
+		Op:          OpRepairEnsureNotification,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}

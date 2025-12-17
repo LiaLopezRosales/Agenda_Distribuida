@@ -236,6 +236,22 @@ func (a *API) handleRegister() http.HandlerFunc {
 		if display == "" {
 			display = in.Name
 		}
+		if display == "" {
+			a.log(ctx, slog.LevelWarn, "register_missing_display_name", "username", in.Username)
+			http.Error(w, "display_name is required", http.StatusBadRequest)
+			return
+		}
+		// Prevent harmful commits: enforce uniqueness before proposing/writing.
+		if existing, err := a.users.GetUserByUsername(in.Username); err == nil && existing != nil {
+			a.log(ctx, slog.LevelWarn, "register_duplicate_username", "username", in.Username)
+			http.Error(w, "username already exists", http.StatusConflict)
+			return
+		}
+		if existing, err := a.users.GetUserByEmail(in.Email); err == nil && existing != nil {
+			a.log(ctx, slog.LevelWarn, "register_duplicate_email", "email", in.Email)
+			http.Error(w, "email already exists", http.StatusConflict)
+			return
+		}
 		u := &User{Username: in.Username, Email: in.Email, DisplayName: display, PasswordHash: hash}
 		// If consensus is wired and this node is leader, replicate user via Raft
 		if a.cons != nil && a.cons.IsLeader() {
@@ -257,6 +273,11 @@ func (a *API) handleRegister() http.HandlerFunc {
 		} else {
 			if err := a.users.CreateUser(u); err != nil {
 				a.log(ctx, slog.LevelWarn, "register_create_failed", "err", err, "username", in.Username)
+				// If we lost a race, return conflict instead of poisoning state.
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					http.Error(w, "user already exists", http.StatusConflict)
+					return
+				}
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -341,9 +362,20 @@ func (a *API) handleCreateGroup() http.HandlerFunc {
 		if gt == "" {
 			gt = "non_hierarchical"
 		}
+		name := strings.TrimSpace(in.Name)
+		if name == "" {
+			a.log(ctx, slog.LevelWarn, "group_create_invalid_name")
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		if len(name) > 200 {
+			a.log(ctx, slog.LevelWarn, "group_create_name_too_long", "len", len(name))
+			http.Error(w, "name is too long", http.StatusBadRequest)
+			return
+		}
 
 		g := &Group{
-			Name:            in.Name,
+			Name:            name,
 			Description:     in.Description,
 			CreatorID:       user.ID,
 			CreatorUserName: user.Username,

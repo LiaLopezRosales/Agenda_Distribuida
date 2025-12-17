@@ -30,6 +30,32 @@ RUN go build -o /agenda ./cmd/server
     
     # Copiar la base de datos inicial (opcional) y la carpeta web
     COPY agenda.db ./
+    # Limpiar datos de la DB en build-time, conservando estructura/tablas.
+    # Esto evita arrastrar estado previo (usuarios, raft_log, cluster_nodes, etc.) dentro de la imagen.
+    RUN sqlite3 /app/agenda.db "\
+      PRAGMA foreign_keys=OFF;\
+      BEGIN;\
+      DELETE FROM users;\
+      DELETE FROM groups;\
+      DELETE FROM group_members;\
+      DELETE FROM appointments;\
+      DELETE FROM participants;\
+      DELETE FROM notifications;\
+      DELETE FROM events;\
+      DELETE FROM cluster_nodes;\
+      DELETE FROM audit_logs;\
+      DELETE FROM raft_log;\
+      DELETE FROM raft_applied;\
+      DELETE FROM raft_meta;\
+      INSERT OR IGNORE INTO raft_meta(key, value) VALUES\
+        ('currentTerm','0'),\
+        ('votedFor',''),\
+        ('commitIndex','0'),\
+        ('lastApplied','0');\
+      COMMIT;\
+      PRAGMA foreign_keys=ON;\
+      VACUUM;\
+    "
     COPY web/ ./web/
     
     # Exponer el puerto del servidor

@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,6 +52,9 @@ type ConsensusImpl struct {
 	// Per-peer replication state (Raft-like): maintained on the leader
 	nextIdx  map[string]int64 // For each follower, index of the next log entry to send
 	matchIdx map[string]int64 // For each follower, index of highest log entry known to be replicated
+
+	applyErr      error
+	applyErrIndex int64
 }
 
 func NewConsensus(nodeID string, storage *Storage, peers PeerStore) *ConsensusImpl {
@@ -208,6 +212,13 @@ func (c *ConsensusImpl) Propose(entry LogEntry) error {
 		c.mu.RUnlock()
 		c.log(slog.LevelWarn, "propose_rejected_not_leader", "leader", c.peers.GetLeader())
 		return errors.New("not leader")
+	}
+	if c.applyErr != nil {
+		err := c.applyErr
+		idx := c.applyErrIndex
+		c.mu.RUnlock()
+		c.log(slog.LevelError, "propose_rejected_apply_error", "apply_err", err.Error(), "apply_err_index", idx)
+		return errors.New("node has unapplied committed entries (apply error)")
 	}
 	term := c.state.CurrentTerm
 	c.mu.RUnlock()
@@ -420,10 +431,26 @@ func (c *ConsensusImpl) loadState() error {
 // fall back to the static PeerStore snapshot.
 func (c *ConsensusImpl) activePeers(maxStale time.Duration) []string {
 	now := time.Now()
+	// Contactable peers are determined as the intersection of:
+	// - peers known to PeerStore (which are resolvable/contactable addresses)
+	// - peers recently seen in cluster_nodes (dynamic liveness)
+	// If cluster_nodes is unavailable/empty, fall back to PeerStore snapshot.
+	knownPeers := c.peers.ListPeers()
+	known := make(map[string]struct{}, len(knownPeers))
+	for _, id := range knownPeers {
+		if id == "" || id == c.nodeID || id == "node-unknown" {
+			continue
+		}
+		known[id] = struct{}{}
+	}
+
 	rows, err := c.storage.db.Query(`SELECT node_id, last_seen FROM cluster_nodes`)
 	if err != nil {
-		// Fallback: use PeerStore snapshot (which does not include self)
-		return c.peers.ListPeers()
+		out := make([]string, 0, len(known))
+		for id := range known {
+			out = append(out, id)
+		}
+		return out
 	}
 	defer rows.Close()
 
@@ -434,26 +461,31 @@ func (c *ConsensusImpl) activePeers(maxStale time.Duration) []string {
 		if err := rows.Scan(&id, &ts); err != nil {
 			continue
 		}
-		if id == c.nodeID {
+		if id == "" || id == c.nodeID || id == "node-unknown" {
 			continue
 		}
-		// If we have never seen a timestamp, or it is recent enough, treat as active
-		if ts.IsZero() || now.Sub(ts) <= maxStale {
+		if _, ok := known[id]; !ok {
+			// Not resolvable/contactable according to PeerStore.
+			continue
+		}
+		if ts.IsZero() {
+			// Unknown timestamp is treated as NOT active to avoid counting stale/bogus rows.
+			continue
+		}
+		if now.Sub(ts) <= maxStale {
 			active[id] = struct{}{}
 		}
 	}
+
 	if len(active) == 0 {
-		// Fallback: no recent cluster_nodes; use PeerStore snapshot
-		peers := c.peers.ListPeers()
-		out := make([]string, 0, len(peers))
-		for _, id := range peers {
-			if id == c.nodeID {
-				continue
-			}
+		// Fallback: if we have no recent active rows, use known peers snapshot.
+		out := make([]string, 0, len(known))
+		for id := range known {
 			out = append(out, id)
 		}
 		return out
 	}
+
 	out := make([]string, 0, len(active))
 	for id := range active {
 		out = append(out, id)
@@ -551,16 +583,19 @@ func (c *ConsensusImpl) recalculateCommitIndex() {
 
 	// Use dynamically detected active peers (recently seen) for majority
 	peers := c.activePeers(15 * time.Second)
-	// Collect match indexes: leader's own last index plus followers' matchIdx
+	// Collect match indexes: leader's own last index plus followers' matchIdx.
+	// Ensure we have a value for every peer to keep majority math consistent.
 	idxs := make([]int64, 0, len(peers)+1)
 	idxs = append(idxs, lastIdx)
 	for _, id := range peers {
 		if id == c.nodeID {
 			continue
 		}
-		if mi, ok := c.matchIdx[id]; ok {
-			idxs = append(idxs, mi)
+		mi := int64(0)
+		if v, ok := c.matchIdx[id]; ok {
+			mi = v
 		}
+		idxs = append(idxs, mi)
 	}
 	if len(idxs) == 0 {
 		return
@@ -570,6 +605,9 @@ func (c *ConsensusImpl) recalculateCommitIndex() {
 	sort.Slice(idxs, func(i, j int) bool { return idxs[i] < idxs[j] })
 	totalNodes := len(peers) + 1
 	majority := (totalNodes / 2) + 1
+	if len(idxs) < majority {
+		return
+	}
 	candidate := idxs[len(idxs)-majority]
 
 	if candidate > c.state.CommitIndex {
@@ -635,6 +673,31 @@ func (c *ConsensusImpl) applyCommitted() error {
 		}
 		if !applied {
 			if err := applier(e); err != nil {
+				// Conservative auto-repair: for some ops, an error can be treated as a
+				// benign no-op (already applied/duplicate) to prevent the state machine
+				// from getting permanently stuck.
+				if isIgnorableApplyError(e, err) {
+					c.log(slog.LevelWarn, "apply_committed_ignored_error", "index", e.Index, "op", e.Op, "err", err.Error())
+					c.audit("raft_apply", "ignored apply error", map[string]any{"index": e.Index, "op": e.Op, "err": err.Error()})
+					if err := c.storage.RecordAppliedEvent(e.EventID, e.Index); err != nil {
+						return err
+					}
+					// advance lastApplied even though we treated it as no-op
+					lastApplied = e.Index
+					_ = c.persistMeta("lastApplied", lastApplied)
+					c.mu.Lock()
+					c.state.LastApplied = lastApplied
+					if c.applyErr != nil && c.applyErrIndex <= lastApplied {
+						c.applyErr = nil
+						c.applyErrIndex = 0
+					}
+					c.mu.Unlock()
+					continue
+				}
+				c.mu.Lock()
+				c.applyErr = err
+				c.applyErrIndex = e.Index
+				c.mu.Unlock()
 				return err
 			}
 			if err := c.storage.RecordAppliedEvent(e.EventID, e.Index); err != nil {
@@ -646,9 +709,44 @@ func (c *ConsensusImpl) applyCommitted() error {
 		_ = c.persistMeta("lastApplied", lastApplied)
 		c.mu.Lock()
 		c.state.LastApplied = lastApplied
+		if c.applyErr != nil && c.applyErrIndex <= lastApplied {
+			c.applyErr = nil
+			c.applyErrIndex = 0
+		}
 		c.mu.Unlock()
 	}
 	return nil
+}
+
+func isIgnorableApplyError(e LogEntry, err error) bool {
+	if err == nil {
+		return true
+	}
+	msg := err.Error()
+	// Errors we explicitly generate to represent benign idempotent replays.
+	if strings.Contains(msg, "apply conflict") {
+		// These conflicts can happen due to TOCTOU races but should not poison the log.
+		// We validate inputs pre-Propose for normal paths.
+		return true
+	}
+	// Storage-layer idempotent remove.
+	if e.Op == OpGroupMemberRemove && strings.Contains(msg, "member not found") {
+		return true
+	}
+	// Best-effort idempotency for inserts that can race/duplicate.
+	if strings.Contains(msg, "UNIQUE constraint failed") {
+		switch e.Op {
+		case OpUserCreate,
+			OpUserUpdateProfile,
+			OpApptCreatePersonal,
+			OpApptCreateGroup,
+			OpRepairEnsureParticipant,
+			OpRepairEnsureGroupMember,
+			OpRepairEnsureNotification:
+			return true
+		}
+	}
+	return false
 }
 
 // waitForApplied blocks until the leader has applied at least up to targetIdx
@@ -660,10 +758,15 @@ func (c *ConsensusImpl) waitForApplied(targetIdx int64, timeout time.Duration) e
 		c.mu.RLock()
 		lastApplied := c.state.LastApplied
 		role := c.role
+		applyErr := c.applyErr
+		applyErrIndex := c.applyErrIndex
 		c.mu.RUnlock()
 
 		if role != roleLeader {
 			return errors.New("lost leadership while waiting for apply")
+		}
+		if applyErr != nil && applyErrIndex > 0 && applyErrIndex <= targetIdx {
+			return errors.New("apply error while waiting for entry to be applied")
 		}
 		if lastApplied >= targetIdx {
 			return nil
@@ -1036,7 +1139,7 @@ func (c *ConsensusImpl) startElection() error {
 	}
 	majority := (totalNodes / 2) + 1
 	timeout := time.After(3 * time.Second) // Increased timeout for network latency
-	for pending := len(peers) - 1; pending > 0; pending-- {
+	for pending := len(peers); pending > 0; pending-- {
 		select {
 		case ok := <-ch:
 			if ok {
@@ -1147,7 +1250,7 @@ func (c *ConsensusImpl) runPreVote() bool {
 		}(id)
 	}
 	timeout := time.After(3 * time.Second)
-	for pending := len(peers) - 1; pending > 0; pending-- {
+	for pending := len(peers); pending > 0; pending-- {
 		select {
 		case r := <-ch:
 			if r.ok {
