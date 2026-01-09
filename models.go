@@ -133,6 +133,14 @@ type Event struct {
 	Version    int64     `json:"version" db:"version"`
 }
 
+// EventFilter constrains how events are fetched for reconciliation.
+type EventFilter struct {
+	Entity string
+	Action string
+	Since  time.Time
+	Limit  int
+}
+
 // ParticipantDetails extends Participant with user information
 type ParticipantDetails struct {
 	ID            int64      `json:"id" db:"id"`

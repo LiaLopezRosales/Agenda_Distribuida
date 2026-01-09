@@ -80,6 +80,12 @@ func main() {
 	// Register Raft HTTP endpoints
 	ad.RegisterRaftHTTP(r, cons)
 	ad.RegisterClusterHTTP(r, storage, ps)
+	// Start background reconcilers (leader-only behavior inside each service).
+	ad.StartUserReconciler(storage, cons, ps)
+	ad.StartAppointmentReconciler(storage, cons, ps)
+	ad.StartGroupReconciler(storage, cons, ps)
+	ad.StartInvitationReconciler(storage, cons, ps)
+	ad.StartNotificationReconciler(storage, cons, ps)
 
 	// Serve static UI under /ui/
 	r.PathPrefix("/ui/").Handler(http.StripPrefix("/ui/", http.FileServer(http.Dir("web"))))

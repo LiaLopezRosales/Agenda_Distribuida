@@ -24,6 +24,7 @@ const (
 	OpInvitationAccept              = "invitation.accept"
 	OpInvitationReject              = "invitation.reject"
 	OpRepairUserClearEmailIfMatches = "repair.user.clear_email_if_matches"
+	OpRepairEnsureUser              = "repair.user.ensure"
 	OpRepairEnsureGroupMember       = "repair.group.ensure_member"
 	OpRepairEnsureParticipant       = "repair.appointment.ensure_participant"
 	OpRepairEnsureNotification      = "repair.notification.ensure"
@@ -32,6 +33,14 @@ const (
 type repairUserClearEmailPayload struct {
 	UserID int64  `json:"user_id"`
 	Email  string `json:"email"`
+}
+
+type repairEnsureUserPayload struct {
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"password_hash"`
+	DisplayName  string `json:"display_name"`
 }
 
 type repairEnsureGroupMemberPayload struct {
@@ -179,6 +188,19 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				return err
 			}
 			return nil
+		case OpRepairEnsureUser:
+			var p repairEnsureUserPayload
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				return err
+			}
+			u := &User{
+				ID:           p.ID,
+				Username:     p.Username,
+				Email:        p.Email,
+				PasswordHash: p.PasswordHash,
+				DisplayName:  p.DisplayName,
+			}
+			return store.EnsureUser(u)
 		case OpApptCreateGroup:
 			var p apptCreateGroupPayload
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {

@@ -29,6 +29,28 @@ func BuildEntryApptCreatePersonal(ownerID int64, a Appointment) (LogEntry, error
 	}, nil
 }
 
+func BuildEntryRepairEnsureUser(u *User) (LogEntry, error) {
+	p := repairEnsureUserPayload{
+		ID:           u.ID,
+		Username:     u.Username,
+		Email:        u.Email,
+		PasswordHash: u.PasswordHash,
+		DisplayName:  u.DisplayName,
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return LogEntry{}, err
+	}
+	return LogEntry{
+		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
+		Aggregate:   "repair_user",
+		AggregateID: strconv.FormatInt(u.ID, 10),
+		Op:          OpRepairEnsureUser,
+		Payload:     string(b),
+		Timestamp:   time.Now(),
+	}, nil
+}
+
 func BuildEntryApptCreateGroup(ownerID int64, a Appointment) (LogEntry, error) {
 	var groupID int64
 	if a.GroupID != nil {
