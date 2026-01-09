@@ -249,6 +249,98 @@ func (s *Storage) UpdatePassword(userID int64, newPasswordHash string) error {
 	return err
 }
 
+// EnsureUser attempts to ensure that a user with the given logical identity
+// (username/email) exists. It is idempotent and enforces a strict policy:
+//   - If a user with the same username exists and all fields match, it is a no-op.
+//   - If a user with the same email exists and all fields match, it is a no-op.
+//   - If username or email collide with different data, it returns a conflict error.
+//   - If only the ID collides (i.e. an existing row has a different logical
+//     identity), a new row is inserted and the caller's ID is updated.
+func (s *Storage) EnsureUser(u *User) error {
+	// Prefer to identify by username/email; ID is best-effort only.
+	if strings.TrimSpace(u.Username) == "" && strings.TrimSpace(u.Email) == "" {
+		return errors.New("ensure_user: missing username and email")
+	}
+
+	// Check existing by username first.
+	if u.Username != "" {
+		if existing, err := s.GetUserByUsername(u.Username); err == nil && existing != nil {
+			// Same logical user?
+			if existing.Email == u.Email && existing.DisplayName == u.DisplayName && existing.PasswordHash == u.PasswordHash {
+				// Idempotent: update caller with existing details and return success.
+				u.ID = existing.ID
+				u.CreatedAt = existing.CreatedAt
+				u.UpdatedAt = existing.UpdatedAt
+				return nil
+			}
+			// Strict conflict on username with different data.
+			return fmt.Errorf("ensure_user conflict: username %s already exists with different data", u.Username)
+		}
+	}
+
+	// Check existing by email.
+	if u.Email != "" {
+		if existing, err := s.GetUserByEmail(u.Email); err == nil && existing != nil {
+			if existing.Username == u.Username && existing.DisplayName == u.DisplayName && existing.PasswordHash == u.PasswordHash {
+				u.ID = existing.ID
+				u.CreatedAt = existing.CreatedAt
+				u.UpdatedAt = existing.UpdatedAt
+				return nil
+			}
+			// Strict conflict on email with different data.
+			return fmt.Errorf("ensure_user conflict: email %s already exists with different data", u.Email)
+		}
+	}
+
+	// At this point, username/email are free (or not set). We create a new user
+	// letting the database choose a fresh ID, which naturally avoids ID
+	// collisions. This also covers the case where the only conflicting field was
+	// the ID: the new row will get a new ID and both users will coexist.
+
+	// We intentionally ignore u.ID here and let CreateUser assign one.
+	nu := &User{
+		Username:     u.Username,
+		Email:        u.Email,
+		PasswordHash: u.PasswordHash,
+		DisplayName:  u.DisplayName,
+	}
+	if err := s.CreateUser(nu); err != nil {
+		// In case of a race on UNIQUE(username/email), re-check using the
+		// idempotency rules above.
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			if u.Username != "" {
+				if existing, gerr := s.GetUserByUsername(u.Username); gerr == nil && existing != nil {
+					if existing.Email == u.Email && existing.DisplayName == u.DisplayName && existing.PasswordHash == u.PasswordHash {
+						u.ID = existing.ID
+						u.CreatedAt = existing.CreatedAt
+						u.UpdatedAt = existing.UpdatedAt
+						return nil
+					}
+					return fmt.Errorf("ensure_user conflict after insert race: username %s now exists with different data", u.Username)
+				}
+			}
+			if u.Email != "" {
+				if existing, gerr := s.GetUserByEmail(u.Email); gerr == nil && existing != nil {
+					if existing.Username == u.Username && existing.DisplayName == u.DisplayName && existing.PasswordHash == u.PasswordHash {
+						u.ID = existing.ID
+						u.CreatedAt = existing.CreatedAt
+						u.UpdatedAt = existing.UpdatedAt
+						return nil
+					}
+					return fmt.Errorf("ensure_user conflict after insert race: email %s now exists with different data", u.Email)
+				}
+			}
+		}
+		return err
+	}
+
+	// Propagate assigned ID/timestamps back to caller.
+	u.ID = nu.ID
+	u.CreatedAt = nu.CreatedAt
+	u.UpdatedAt = nu.UpdatedAt
+	return nil
+}
+
 func (s *Storage) ClearUserEmailIfMatches(userID int64, email string) error {
 	_, err := s.db.Exec(`UPDATE users SET email=NULL, updated_at=? WHERE id=? AND email=?`, time.Now(), userID, email)
 	return err
@@ -268,13 +360,40 @@ func (s *Storage) CreateGroup(g *Group) error {
 	g.ID = id
 	g.CreatedAt = now
 	g.UpdatedAt = now
+	// Persist group create event for reconciliation
+	payload := fmt.Sprintf(`{"name":%q,"description":%q,"creator_id":%d,"creator_username":%q,"group_type":%q}`,
+		g.Name, g.Description, g.CreatorID, g.CreatorUserName, g.GroupType)
+	evt := &Event{
+		Entity:     "group",
+		EntityID:   g.ID,
+		Action:     "create",
+		Payload:    payload,
+		OriginNode: g.CreatorUserName,
+		Version:    1,
+	}
+	_ = s.AppendEvent(evt)
 	return nil
 }
 
 func (s *Storage) AddGroupMember(groupID, userID int64, rank int, addedBy *int64) error {
+	now := time.Now()
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO group_members(group_id,user_id,rank,added_by,created_at)
-		VALUES(?,?,?,?,?)`, groupID, userID, rank, addedBy, time.Now())
-	return err
+		VALUES(?,?,?,?,?)`, groupID, userID, rank, addedBy, now)
+	if err != nil {
+		return err
+	}
+	// Emit event for reconciliation of memberships
+	payload := fmt.Sprintf(`{"group_id":%d,"user_id":%d,"rank":%d}`, groupID, userID, rank)
+	evt := &Event{
+		Entity:     "group_member",
+		EntityID:   groupID,
+		Action:     "add",
+		Payload:    payload,
+		OriginNode: "",
+		Version:    1,
+	}
+	_ = s.AppendEvent(evt)
+	return nil
 }
 
 func (s *Storage) EnsureGroupMember(groupID, userID int64, rank int, addedBy *int64) error {
@@ -335,6 +454,18 @@ func (s *Storage) GetGroupByID(id int64) (*Group, error) {
 		return nil, err
 	}
 	return &g, nil
+}
+
+// FindGroupBySignature provides a best-effort natural key to detect if a group
+// already exists based on creator and name/group_type.
+func (s *Storage) FindGroupBySignature(name string, creatorID int64, groupType GroupType) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM groups WHERE name=? AND creator_id=? AND group_type=? ORDER BY id DESC LIMIT 1`,
+		name, creatorID, groupType).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
 }
 
 // UpdateGroup updates group information
@@ -435,7 +566,22 @@ func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status Ap
 		SET status=?, updated_at=?
 		WHERE appointment_id=? AND user_id=?`,
 		status, now, appointmentID, userID)
-	return err
+	if err != nil {
+		return err
+	}
+	// Emit event to allow reconciliation of invitation status across partitions.
+	payload := fmt.Sprintf(`{"appointment_id":%d,"user_id":%d,"status":%q}`,
+		appointmentID, userID, status)
+	evt := &Event{
+		Entity:   "invitation",
+		EntityID: appointmentID,
+		Action:   "status_change",
+		Payload:  payload,
+		// OriginNode left empty; it is mainly logical and not required here.
+		Version: 1,
+	}
+	_ = s.AppendEvent(evt)
+	return nil
 }
 
 // GetParticipantByAppointmentAndUser gets a specific participant
@@ -505,7 +651,7 @@ func (s *Storage) CreateAppointment(a *Appointment) error {
 		VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,?)`,
 		a.Title, a.Description, a.OwnerID, a.GroupID,
 		a.Start.Unix(), a.End.Unix(), a.Privacy, a.Status,
-		1, "", 0, now, now)
+		1, a.OriginNode, 0, now, now)
 	if err != nil {
 		return err
 	}
@@ -513,6 +659,19 @@ func (s *Storage) CreateAppointment(a *Appointment) error {
 	a.ID = id
 	a.CreatedAt = now
 	a.UpdatedAt = now
+
+	// Persist an event for reconciliation. Payload includes a minimal signature.
+	payload := fmt.Sprintf(`{"owner_id":%d,"group_id":null,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
+		a.OwnerID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
+	evt := &Event{
+		Entity:     "appointment",
+		EntityID:   a.ID,
+		Action:     "create",
+		Payload:    payload,
+		OriginNode: a.OriginNode,
+		Version:    a.Version,
+	}
+	_ = s.AppendEvent(evt)
 	return nil
 }
 
@@ -715,12 +874,14 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 		return nil, err
 	}
 
-	// Evento (fuera de la transacción)
+	// Evento (fuera de la transacción) con payload estructurado para reconciliación.
+	payload := fmt.Sprintf(`{"owner_id":%d,"group_id":%d,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
+		a.OwnerID, *a.GroupID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
 	evt := &Event{
 		Entity:     "appointment",
 		EntityID:   a.ID,
 		Action:     "create",
-		Payload:    "",
+		Payload:    payload,
 		OriginNode: a.OriginNode,
 		Version:    a.Version,
 	}
@@ -743,6 +904,15 @@ func (s *Storage) AddNotification(n *Notification) error {
 	id, _ := res.LastInsertId()
 	n.ID = id
 	n.CreatedAt = now
+	// Emit event so notifications can be reconciled across partitions.
+	evt := &Event{
+		Entity:   "notification",
+		EntityID: n.ID,
+		Action:   "create",
+		Payload:  n.Payload,
+		Version:  1,
+	}
+	_ = s.AppendEvent(evt)
 	return nil
 }
 
@@ -902,6 +1072,44 @@ func (s *Storage) AppendEvent(e *Event) error {
 	e.ID = id
 	e.CreatedAt = now
 	return nil
+}
+
+// ListEvents returns events matching the given filter, ordered by creation.
+func (s *Storage) ListEvents(filter EventFilter) ([]Event, error) {
+	qry := `SELECT id, entity, entity_id, action, payload, created_at, origin_node, version
+		FROM events WHERE 1=1`
+	args := []any{}
+	if filter.Entity != "" {
+		qry += " AND entity=?"
+		args = append(args, filter.Entity)
+	}
+	if filter.Action != "" {
+		qry += " AND action=?"
+		args = append(args, filter.Action)
+	}
+	if !filter.Since.IsZero() {
+		qry += " AND created_at>=?"
+		args = append(args, filter.Since)
+	}
+	qry += " ORDER BY created_at ASC, id ASC"
+	if filter.Limit > 0 {
+		qry += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+	rows, err := s.db.Query(qry, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.Entity, &e.EntityID, &e.Action, &e.Payload, &e.CreatedAt, &e.OriginNode, &e.Version); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // AppendAudit stores an immutable audit record.
