@@ -87,13 +87,29 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						Logger().Debug("group_reconcile_request_failed", "peer", id, "err", err)
 						goto MEMBERS
 					}
+					defer resp.Body.Close()
+					
+					// Verify HTTP status code before decoding
+					if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+						Logger().Debug("group_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
+						goto MEMBERS
+					}
+					
+					// Update LastSeen for successfully contacted peer
+					if store != nil && id != "" && id != cons.NodeID() {
+						_ = store.UpsertClusterNode(&ClusterNode{
+							NodeID:   id,
+							Address:  addr,
+							Source:   "reconciler",
+							LastSeen: time.Now(),
+						})
+					}
+					
 					var events []Event
 					if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
-						resp.Body.Close()
 						Logger().Warn("group_reconcile_decode_failed", "peer", id, "err", err)
 						goto MEMBERS
 					}
-					resp.Body.Close()
 					for _, ev := range events {
 						if ev.CreatedAt.After(maxGroupTS) {
 							maxGroupTS = ev.CreatedAt
@@ -151,13 +167,29 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						Logger().Debug("group_member_reconcile_request_failed", "peer", id, "err", err)
 						goto UPDATE_STATE
 					}
+					defer resp.Body.Close()
+					
+					// Verify HTTP status code before decoding
+					if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+						Logger().Debug("group_member_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
+						goto UPDATE_STATE
+					}
+					
+					// Update LastSeen for successfully contacted peer (already updated above, but do it again for consistency)
+					if store != nil && id != "" && id != cons.NodeID() {
+						_ = store.UpsertClusterNode(&ClusterNode{
+							NodeID:   id,
+							Address:  addr,
+							Source:   "reconciler",
+							LastSeen: time.Now(),
+						})
+					}
+					
 					var events []Event
 					if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
-						resp.Body.Close()
 						Logger().Warn("group_member_reconcile_decode_failed", "peer", id, "err", err)
 						goto UPDATE_STATE
 					}
-					resp.Body.Close()
 					for _, ev := range events {
 						if ev.CreatedAt.After(maxMemberTS) {
 							maxMemberTS = ev.CreatedAt

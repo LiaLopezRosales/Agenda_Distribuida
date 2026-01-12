@@ -66,7 +66,7 @@ func main() {
 	})
 	// best-effort leader discovery via health polling
 	stopHB := make(chan struct{})
-	ad.StartHeartbeats(ps, stopHB)
+	ad.StartHeartbeats(ps, storage, stopHB)
 
 	// Pass storage as UserRepository, GroupRepository, and AppointmentRepository and wire consensus into API
 	api := ad.NewAPI(auth, groups, apps, agenda, notes, storage, storage, storage, storage, cons)
@@ -78,7 +78,7 @@ func main() {
 	r.Use(ad.LeaderWriteMiddleware(cons, ps.ResolveAddr))
 
 	// Register Raft HTTP endpoints
-	ad.RegisterRaftHTTP(r, cons)
+	ad.RegisterRaftHTTP(r, cons, storage)
 	ad.RegisterClusterHTTP(r, storage, ps)
 	// Start background reconcilers (leader-only behavior inside each service).
 	ad.StartUserReconciler(storage, cons, ps)

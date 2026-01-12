@@ -9,7 +9,9 @@ import (
 
 // StartHeartbeats polls peers' /raft/health to discover current leader.
 // It's a best-effort mechanism until full AppendEntries heartbeats are implemented.
-func StartHeartbeats(ps *EnvPeerStore, stopCh <-chan struct{}) {
+// Also updates LastSeen for successfully contacted peers to keep them in PeerStore
+// during network partitions.
+func StartHeartbeats(ps *EnvPeerStore, store *Storage, stopCh <-chan struct{}) {
 	go func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -32,6 +34,18 @@ func StartHeartbeats(ps *EnvPeerStore, stopCh <-chan struct{}) {
 					}
 					_ = json.NewDecoder(resp.Body).Decode(&h)
 					resp.Body.Close()
+					
+					// Update LastSeen for successfully contacted peer
+					// This is critical during partitions: reachable peers stay in PeerStore
+					if store != nil && id != "" && id != ps.LocalID() {
+						_ = store.UpsertClusterNode(&ClusterNode{
+							NodeID:   id,
+							Address:  addr,
+							Source:   "heartbeat",
+							LastSeen: time.Now(),
+						})
+					}
+					
 					if h.IsLeader {
 						prev := ps.GetLeader()
 						ps.SetLeader(id)

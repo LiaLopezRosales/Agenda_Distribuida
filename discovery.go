@@ -202,11 +202,24 @@ func (d *DiscoveryManager) updatePeersFromStorage() {
 	}
 	now := time.Now()
 	snapshot := make(map[string]string)
+	
+	// Use a shorter maxPeerAge for Raft consensus to detect partitions faster.
+	// During partitions, unreachable nodes should be removed from PeerStore
+	// quickly so that majority calculations are correct for the reachable subset.
+	// maxPeerAge (2 min) is too long - use 30 seconds for consensus-critical peers.
+	consensusMaxAge := 30 * time.Second
+	if consensusMaxAge > d.maxPeerAge {
+		consensusMaxAge = d.maxPeerAge
+	}
+	
 	for _, node := range nodes {
 		if node.NodeID == d.localID || node.Address == d.advertiseAddr {
 			continue
 		}
-		if now.Sub(node.LastSeen) > d.maxPeerAge {
+		// Only include nodes that have been seen recently (within consensusMaxAge).
+		// This ensures that during network partitions, unreachable nodes are
+		// quickly removed from PeerStore, allowing correct majority calculations.
+		if now.Sub(node.LastSeen) > consensusMaxAge {
 			continue
 		}
 		addr := node.Address

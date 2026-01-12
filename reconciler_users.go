@@ -75,13 +75,30 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 					Logger().Debug("user_reconcile_request_failed", "peer", id, "err", err)
 					continue
 				}
+				defer resp.Body.Close()
+				
+				// Verify HTTP status code before decoding
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					Logger().Debug("user_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
+					continue
+				}
+				
+				// Update LastSeen for successfully contacted peer
+				// Critical during partitions: reachable peers stay in PeerStore
+				if store != nil && id != "" && id != cons.NodeID() {
+					_ = store.UpsertClusterNode(&ClusterNode{
+						NodeID:   id,
+						Address:  addr,
+						Source:   "reconciler",
+						LastSeen: time.Now(),
+					})
+				}
+				
 				var logs []AuditLog
 				if err := json.NewDecoder(resp.Body).Decode(&logs); err != nil {
-					resp.Body.Close()
 					Logger().Warn("user_reconcile_decode_failed", "peer", id, "err", err)
 					continue
 				}
-				resp.Body.Close()
 
 				// Process logs: for each, attempt to ensure the user exists via repair.
 				var maxTS time.Time

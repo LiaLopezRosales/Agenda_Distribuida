@@ -12,8 +12,11 @@ import (
 	"github.com/gorilla/mux"
 )
 
-func RegisterRaftHTTP(r *mux.Router, cons Consensus) {
+func RegisterRaftHTTP(r *mux.Router, cons Consensus, store *Storage) {
 	r.HandleFunc("/raft/health", func(w http.ResponseWriter, r *http.Request) {
+		// Update LastSeen for the requesting node (if identifiable from request)
+		// Note: /raft/health doesn't include sender info in a standard way,
+		// so we skip LastSeen update here. It's handled by heartbeat.go.
 		resp := map[string]any{
 			"node_id":   cons.NodeID(),
 			"is_leader": cons.IsLeader(),
@@ -50,6 +53,23 @@ func RegisterRaftHTTP(r *mux.Router, cons Consensus) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Update LastSeen for the requesting candidate - this proves reachability
+		// Critical for network partitions: successful Raft communication means node is reachable
+		if store != nil && req.CandidateID != "" && req.CandidateID != cons.NodeID() {
+			// Try to resolve address from PeerStore if possible
+			if impl, ok := cons.(*ConsensusImpl); ok {
+				addr := impl.peers.ResolveAddr(req.CandidateID)
+				if addr == "" {
+					addr = req.CandidateID // fallback to node ID as address
+				}
+				_ = store.UpsertClusterNode(&ClusterNode{
+					NodeID:   req.CandidateID,
+					Address:  addr,
+					Source:   "raft",
+					LastSeen: time.Now(),
+				})
+			}
+		}
 		json.NewEncoder(w).Encode(resp)
 	}).Methods("POST")
 
@@ -66,6 +86,23 @@ func RegisterRaftHTTP(r *mux.Router, cons Consensus) {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Update LastSeen for the requesting leader - this proves reachability
+		// Critical for network partitions: successful Raft communication means node is reachable
+		if store != nil && req.LeaderID != "" && req.LeaderID != cons.NodeID() {
+			// Try to resolve address from PeerStore if possible
+			if impl, ok := cons.(*ConsensusImpl); ok {
+				addr := impl.peers.ResolveAddr(req.LeaderID)
+				if addr == "" {
+					addr = req.LeaderID // fallback to node ID as address
+				}
+				_ = store.UpsertClusterNode(&ClusterNode{
+					NodeID:   req.LeaderID,
+					Address:  addr,
+					Source:   "raft",
+					LastSeen: time.Now(),
+				})
+			}
 		}
 		json.NewEncoder(w).Encode(resp)
 	}).Methods("POST")
