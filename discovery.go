@@ -177,20 +177,55 @@ func (d *DiscoveryManager) announceToSeeds() {
 			Logger().Debug("seed_join_failed", "seed", seed, "err", err)
 			continue
 		}
+		defer resp.Body.Close()
+		
+		// Update LastSeen for the seed itself (we successfully contacted it)
+		// Extract seed address to identify it in cluster_nodes
+		seedAddr := strings.TrimPrefix(strings.TrimPrefix(seed, "http://"), "https://")
+		_ = d.store.UpsertClusterNode(&ClusterNode{
+			NodeID:   seedAddr,
+			Address:  seedAddr,
+			Source:   "seed",
+			LastSeen: time.Now(),
+		})
+		
 		var out struct {
 			Nodes []ClusterNode `json:"nodes"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&out); err == nil {
+			// CRITICAL: Do NOT update LastSeen for nodes reported by the seed.
+			// This prevents unreachable nodes from being marked as "recently seen"
+			// during network partitions. Only nodes we directly communicate with
+			// (via Raft, heartbeat, or reconcilers) should have their LastSeen updated.
+			existingNodes, _ := d.store.ListClusterNodes()
+			existingMap := make(map[string]time.Time)
+			for _, existing := range existingNodes {
+				existingMap[existing.NodeID] = existing.LastSeen
+			}
+			
 			for _, node := range out.Nodes {
+				// Preserve existing LastSeen if node already exists
+				// Only use node.LastSeen from seed if node is new (but still use a conservative time)
+				lastSeen := node.LastSeen
+				if existingLastSeen, exists := existingMap[node.NodeID]; exists {
+					// Node already exists: preserve its LastSeen to avoid marking
+					// unreachable nodes as "recently seen" during partitions
+					lastSeen = existingLastSeen
+				} else if lastSeen.IsZero() {
+					// New node with no LastSeen: use a time in the past so it expires quickly
+					// if not directly contacted
+					lastSeen = time.Now().Add(-2 * time.Minute)
+				}
+				// else: use the LastSeen from the seed (which may be stale)
+				
 				_ = d.store.UpsertClusterNode(&ClusterNode{
 					NodeID:   node.NodeID,
 					Address:  node.Address,
 					Source:   "gossip",
-					LastSeen: time.Now(),
+					LastSeen: lastSeen,
 				})
 			}
 		}
-		resp.Body.Close()
 	}
 }
 
