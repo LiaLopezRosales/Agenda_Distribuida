@@ -77,13 +77,29 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 					Logger().Debug("notification_reconcile_request_failed", "peer", id, "err", err)
 					continue
 				}
+				defer resp.Body.Close()
+				
+				// Verify HTTP status code before decoding
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					Logger().Debug("notification_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
+					continue
+				}
+				
+				// Update LastSeen for successfully contacted peer
+				if store != nil && id != "" && id != cons.NodeID() {
+					_ = store.UpsertClusterNode(&ClusterNode{
+						NodeID:   id,
+						Address:  addr,
+						Source:   "reconciler",
+						LastSeen: time.Now(),
+					})
+				}
+				
 				var events []Event
 				if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
-					resp.Body.Close()
 					Logger().Warn("notification_reconcile_decode_failed", "peer", id, "err", err)
 					continue
 				}
-				resp.Body.Close()
 
 				var maxTS time.Time
 				for _, ev := range events {

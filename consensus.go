@@ -425,71 +425,31 @@ func (c *ConsensusImpl) loadState() error {
 }
 
 // activePeers returns the list of peer node IDs that are considered "active"
-// based on recent sightings in the cluster_nodes table. A node is active if
-// its LastSeen is within maxStale of the current time. The local node ID is
-// always excluded from the result. If the query fails or returns no rows, we
-// fall back to the static PeerStore snapshot.
+// based on actual connectivity, not just LastSeen timestamps. This is critical
+// for network partitions: we only count peers that we can actually communicate with.
+//
+// The function uses PeerStore as the source of truth, which is updated by
+// DiscoveryManager based on successful communication. During partitions,
+// unreachable peers will eventually be removed from PeerStore when their
+// LastSeen expires (maxPeerAge = 2 minutes).
 func (c *ConsensusImpl) activePeers(maxStale time.Duration) []string {
-	now := time.Now()
-	// Contactable peers are determined as the intersection of:
-	// - peers known to PeerStore (which are resolvable/contactable addresses)
-	// - peers recently seen in cluster_nodes (dynamic liveness)
-	// If cluster_nodes is unavailable/empty, fall back to PeerStore snapshot.
+	// Use only PeerStore - it represents nodes that DiscoveryManager considers
+	// contactable. During partitions, unreachable nodes will have stale LastSeen
+	// and will be removed from PeerStore by updatePeersFromStorage() after maxPeerAge.
 	knownPeers := c.peers.ListPeers()
-	known := make(map[string]struct{}, len(knownPeers))
+	out := make([]string, 0, len(knownPeers))
 	for _, id := range knownPeers {
 		if id == "" || id == c.nodeID || id == "node-unknown" {
 			continue
 		}
-		known[id] = struct{}{}
-	}
-
-	rows, err := c.storage.db.Query(`SELECT node_id, last_seen FROM cluster_nodes`)
-	if err != nil {
-		out := make([]string, 0, len(known))
-		for id := range known {
-			out = append(out, id)
-		}
-		return out
-	}
-	defer rows.Close()
-
-	active := make(map[string]struct{})
-	for rows.Next() {
-		var id string
-		var ts time.Time
-		if err := rows.Scan(&id, &ts); err != nil {
-			continue
-		}
-		if id == "" || id == c.nodeID || id == "node-unknown" {
-			continue
-		}
-		if _, ok := known[id]; !ok {
-			// Not resolvable/contactable according to PeerStore.
-			continue
-		}
-		if ts.IsZero() {
-			// Unknown timestamp is treated as NOT active to avoid counting stale/bogus rows.
-			continue
-		}
-		if now.Sub(ts) <= maxStale {
-			active[id] = struct{}{}
-		}
-	}
-
-	if len(active) == 0 {
-		// Fallback: if we have no recent active rows, use known peers snapshot.
-		out := make([]string, 0, len(known))
-		for id := range known {
-			out = append(out, id)
-		}
-		return out
-	}
-
-	out := make([]string, 0, len(active))
-	for id := range active {
 		out = append(out, id)
 	}
+
+	// Log for debugging partition scenarios
+	if len(out) > 0 {
+		c.log(slog.LevelDebug, "active_peers_computed", "count", len(out), "peers", out)
+	}
+
 	return out
 }
 
@@ -1145,15 +1105,15 @@ func (c *ConsensusImpl) startElection() error {
 			if ok {
 				votes++
 			}
-			// In small clusters (2 or 3 nodes), allow a single reachable node to
-			// proceed as leader in degraded mode when other nodes are unavailable.
-			if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
+			// Check if we have majority or can use degraded mode
+			attemptedContacts := len(peers) // peers excludes self
+			if votes >= majority {
+				// Normal case: we have majority
 				c.mu.Lock()
 				c.role = roleLeader
 				c.peers.SetLeader(c.nodeID)
-				c.heartbeatFailures = 0 // Reset failure counter when becoming leader
-				c.failedElections = 0   // Reset election backoff on success
-				// Initialize per-peer replication state
+				c.heartbeatFailures = 0
+				c.failedElections = 0
 				lastIdx, _, _ := c.lastIndexTerm()
 				c.nextIdx = make(map[string]int64)
 				c.matchIdx = make(map[string]int64)
@@ -1165,10 +1125,33 @@ func (c *ConsensusImpl) startElection() error {
 					c.matchIdx[id] = 0
 				}
 				c.mu.Unlock()
-				c.log(slog.LevelInfo, "election_won", "term", term)
-				c.audit("election", "node became leader", map[string]any{"term": term})
+				c.log(slog.LevelInfo, "election_won", "term", term, "votes", votes, "majority", majority)
+				c.audit("election", "node became leader", map[string]any{"term": term, "votes": votes, "majority": majority})
+				return nil
+			} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+				// Degraded mode: only for very small clusters where we tried to contact others
+				// but they're unreachable. This prevents split-brain during partitions.
+				c.mu.Lock()
+				c.role = roleLeader
+				c.peers.SetLeader(c.nodeID)
+				c.heartbeatFailures = 0
+				c.failedElections = 0
+				lastIdx, _, _ := c.lastIndexTerm()
+				c.nextIdx = make(map[string]int64)
+				c.matchIdx = make(map[string]int64)
+				for _, id := range peers {
+					if id == c.nodeID {
+						continue
+					}
+					c.nextIdx[id] = lastIdx + 1
+					c.matchIdx[id] = 0
+				}
+				c.mu.Unlock()
+				c.log(slog.LevelWarn, "election_won_degraded", "term", term, "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
+				c.audit("election", "node became leader in degraded mode", map[string]any{"term": term, "votes": votes, "total_nodes": totalNodes})
 				return nil
 			}
+			// Continue waiting for more votes
 		case <-timeout:
 			c.mu.Lock()
 			if c.failedElections < 10 {
@@ -1179,13 +1162,14 @@ func (c *ConsensusImpl) startElection() error {
 			return errors.New("election timeout")
 		}
 	}
-	if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
+	attemptedContacts := len(peers) // peers excludes self
+	if votes >= majority {
+		// Normal case: we have majority
 		c.mu.Lock()
 		c.role = roleLeader
 		c.peers.SetLeader(c.nodeID)
-		c.heartbeatFailures = 0 // Reset failure counter when becoming leader
-		c.failedElections = 0   // Reset election backoff on success
-		// Initialize per-peer replication state
+		c.heartbeatFailures = 0
+		c.failedElections = 0
 		lastIdx, _, _ := c.lastIndexTerm()
 		c.nextIdx = make(map[string]int64)
 		c.matchIdx = make(map[string]int64)
@@ -1197,8 +1181,30 @@ func (c *ConsensusImpl) startElection() error {
 			c.matchIdx[id] = 0
 		}
 		c.mu.Unlock()
-		c.log(slog.LevelInfo, "election_won", "term", term)
-		c.audit("election", "node became leader", map[string]any{"term": term})
+		c.log(slog.LevelInfo, "election_won", "term", term, "votes", votes, "majority", majority)
+		c.audit("election", "node became leader", map[string]any{"term": term, "votes": votes, "majority": majority})
+		return nil
+	} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+		// Degraded mode: only for very small clusters where we tried to contact others
+		// but they're unreachable. This prevents split-brain during partitions.
+		c.mu.Lock()
+		c.role = roleLeader
+		c.peers.SetLeader(c.nodeID)
+		c.heartbeatFailures = 0
+		c.failedElections = 0
+		lastIdx, _, _ := c.lastIndexTerm()
+		c.nextIdx = make(map[string]int64)
+		c.matchIdx = make(map[string]int64)
+		for _, id := range peers {
+			if id == c.nodeID {
+				continue
+			}
+			c.nextIdx[id] = lastIdx + 1
+			c.matchIdx[id] = 0
+		}
+		c.mu.Unlock()
+		c.log(slog.LevelWarn, "election_won_degraded", "term", term, "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
+		c.audit("election", "node became leader in degraded mode", map[string]any{"term": term, "votes": votes, "total_nodes": totalNodes})
 		return nil
 	}
 	c.mu.Lock()
@@ -1256,22 +1262,32 @@ func (c *ConsensusImpl) runPreVote() bool {
 			if r.ok {
 				votes++
 			}
-			// In small clusters (2 or 3 nodes), allow a single reachable node to
-			// obtain a positive pre-vote result in degraded mode.
-			if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
+			// Check if we have majority or can use degraded mode
+			attemptedContacts := len(peers) // peers excludes self
+			if votes >= majority {
 				c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
 				return true
+			} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+				// Degraded mode: only if we tried to contact others (prevents split-brain)
+				c.log(slog.LevelDebug, "prevote_degraded_mode", "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
+				return true
 			}
+			// Continue waiting for more votes
 		case <-timeout:
 			c.log(slog.LevelWarn, "prevote_timeout", "votes", votes, "majority", majority)
 			return false
 		}
 	}
-	if votes >= majority || (votes == 1 && (totalNodes == 2 || totalNodes == 3)) {
+	attemptedContacts := len(peers) // peers excludes self
+	if votes >= majority {
 		c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
 		return true
+	} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+		// Degraded mode: only if we tried to contact others
+		c.log(slog.LevelDebug, "prevote_degraded_mode", "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
+		return true
 	}
-	c.log(slog.LevelDebug, "prevote_no_majority", "votes", votes, "majority", majority)
+	c.log(slog.LevelDebug, "prevote_no_majority", "votes", votes, "majority", majority, "total_nodes", totalNodes)
 	return false
 }
 
