@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -382,8 +383,12 @@ func (s *Storage) AddGroupMember(groupID, userID int64, rank int, addedBy *int64
 	if err != nil {
 		return err
 	}
-	// Emit event for reconciliation of memberships
-	payload := fmt.Sprintf(`{"group_id":%d,"user_id":%d,"rank":%d}`, groupID, userID, rank)
+	// Emit event for reconciliation of memberships. Include username for ID mapping.
+	var username string
+	if user, err := s.GetUserByID(userID); err == nil && user != nil {
+		username = user.Username
+	}
+	payload := fmt.Sprintf(`{"group_id":%d,"user_id":%d,"username":%q,"rank":%d}`, groupID, userID, username, rank)
 	evt := &Event{
 		Entity:     "group_member",
 		EntityID:   groupID,
@@ -569,9 +574,35 @@ func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status Ap
 	if err != nil {
 		return err
 	}
-	// Emit event to allow reconciliation of invitation status across partitions.
-	payload := fmt.Sprintf(`{"appointment_id":%d,"user_id":%d,"status":%q}`,
-		appointmentID, userID, status)
+	// Emit event to allow reconciliation of invitation status across partitions. Include username and appointment info for ID mapping.
+	var username string
+	if user, err := s.GetUserByID(userID); err == nil && user != nil {
+		username = user.Username
+	}
+	// Get appointment info for ID mapping
+	var apptOwnerUsername, apptGroupName, apptGroupCreatorUsername, apptTitle, apptStart, apptEnd string
+	var apptGroupID *int64
+	if appt, err := s.GetAppointmentByID(appointmentID); err == nil && appt != nil {
+		apptTitle = appt.Title
+		apptStart = appt.Start.Format(time.RFC3339)
+		apptEnd = appt.End.Format(time.RFC3339)
+		apptGroupID = appt.GroupID
+		if owner, err := s.GetUserByID(appt.OwnerID); err == nil && owner != nil {
+			apptOwnerUsername = owner.Username
+		}
+		if appt.GroupID != nil {
+			if group, err := s.GetGroupByID(*appt.GroupID); err == nil && group != nil {
+				apptGroupName = group.Name
+				apptGroupCreatorUsername = group.CreatorUserName
+			}
+		}
+	}
+	groupIDVal := "null"
+	if apptGroupID != nil {
+		groupIDVal = strconv.FormatInt(*apptGroupID, 10)
+	}
+	payload := fmt.Sprintf(`{"appointment_id":%d,"user_id":%d,"username":%q,"status":%q,"appt_owner_username":%q,"appt_group_id":%s,"appt_group_name":%q,"appt_group_creator_username":%q,"appt_title":%q,"appt_start":%q,"appt_end":%q}`,
+		appointmentID, userID, username, status, apptOwnerUsername, groupIDVal, apptGroupName, apptGroupCreatorUsername, apptTitle, apptStart, apptEnd)
 	evt := &Event{
 		Entity:   "invitation",
 		EntityID: appointmentID,
@@ -660,9 +691,24 @@ func (s *Storage) CreateAppointment(a *Appointment) error {
 	a.CreatedAt = now
 	a.UpdatedAt = now
 
-	// Persist an event for reconciliation. Payload includes a minimal signature.
-	payload := fmt.Sprintf(`{"owner_id":%d,"group_id":null,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
-		a.OwnerID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
+	// Persist an event for reconciliation. Payload includes owner_username and group info for ID mapping.
+	// Get owner username for reconciliation (to map remote IDs to local IDs)
+	var ownerUsername string
+	if owner, err := s.GetUserByID(a.OwnerID); err == nil && owner != nil {
+		ownerUsername = owner.Username
+	}
+	// Get group info for ID mapping during reconciliation
+	var groupName, groupCreatorUsername string
+	groupIDVal := "null"
+	if a.GroupID != nil {
+		groupIDVal = strconv.FormatInt(*a.GroupID, 10)
+		if group, err := s.GetGroupByID(*a.GroupID); err == nil && group != nil {
+			groupName = group.Name
+			groupCreatorUsername = group.CreatorUserName
+		}
+	}
+	payload := fmt.Sprintf(`{"owner_id":%d,"owner_username":%q,"group_id":%s,"group_name":%q,"group_creator_username":%q,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
+		a.OwnerID, ownerUsername, groupIDVal, groupName, groupCreatorUsername, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
 	evt := &Event{
 		Entity:     "appointment",
 		EntityID:   a.ID,
@@ -875,8 +921,19 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 	}
 
 	// Evento (fuera de la transacción) con payload estructurado para reconciliación.
-	payload := fmt.Sprintf(`{"owner_id":%d,"group_id":%d,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
-		a.OwnerID, *a.GroupID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
+	// Include owner_username and group info for ID mapping during reconciliation
+	var ownerUsername string
+	if owner, err := s.GetUserByID(a.OwnerID); err == nil && owner != nil {
+		ownerUsername = owner.Username
+	}
+	// Get group info for ID mapping
+	var groupName, groupCreatorUsername string
+	if group, err := s.GetGroupByID(*a.GroupID); err == nil && group != nil {
+		groupName = group.Name
+		groupCreatorUsername = group.CreatorUserName
+	}
+	payload := fmt.Sprintf(`{"owner_id":%d,"owner_username":%q,"group_id":%d,"group_name":%q,"group_creator_username":%q,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
+		a.OwnerID, ownerUsername, *a.GroupID, groupName, groupCreatorUsername, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
 	evt := &Event{
 		Entity:     "appointment",
 		EntityID:   a.ID,
@@ -905,11 +962,19 @@ func (s *Storage) AddNotification(n *Notification) error {
 	n.ID = id
 	n.CreatedAt = now
 	// Emit event so notifications can be reconciled across partitions.
+	// Include user_id and username for ID mapping during reconciliation
+	var username string
+	if user, err := s.GetUserByID(n.UserID); err == nil && user != nil {
+		username = user.Username
+	}
+	// Enrich payload with user_id and username for reconciliation
+	enrichedPayload := fmt.Sprintf(`{"user_id":%d,"username":%q,"type":%q,"payload":%q}`,
+		n.UserID, username, n.Type, n.Payload)
 	evt := &Event{
 		Entity:   "notification",
 		EntityID: n.ID,
 		Action:   "create",
-		Payload:  n.Payload,
+		Payload:  enrichedPayload,
 		Version:  1,
 	}
 	_ = s.AppendEvent(evt)
