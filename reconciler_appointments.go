@@ -29,16 +29,17 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 	perPeer := make(map[string]*peerState)
 
 	type apptPayload struct {
-		OwnerID              int64   `json:"owner_id"`
-		OwnerUsername        string  `json:"owner_username"` // For ID mapping during reconciliation
-		GroupID              *int64  `json:"group_id"`
-		GroupName            string  `json:"group_name"`             // For group ID mapping
-		GroupCreatorUsername string  `json:"group_creator_username"` // For group ID mapping
-		Title                string  `json:"title"`
-		Description          string  `json:"description"`
-		Start                string  `json:"start"`
-		End                  string  `json:"end"`
-		Privacy              Privacy `json:"privacy"`
+		OwnerID              int64     `json:"owner_id"`
+		OwnerUsername        string    `json:"owner_username"` // For ID mapping during reconciliation
+		GroupID              *int64    `json:"group_id"`
+		GroupName            string    `json:"group_name"`             // For group ID mapping
+		GroupCreatorUsername string    `json:"group_creator_username"` // For group ID mapping
+		GroupType            GroupType `json:"group_type"`             // For group ID mapping
+		Title                string    `json:"title"`
+		Description          string    `json:"description"`
+		Start                string    `json:"start"`
+		End                  string    `json:"end"`
+		Privacy              Privacy   `json:"privacy"`
 	}
 
 	go func() {
@@ -85,13 +86,13 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 					continue
 				}
 				defer resp.Body.Close()
-				
+
 				// Verify HTTP status code before decoding
 				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 					Logger().Debug("appt_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
 					continue
 				}
-				
+
 				// Update LastSeen for successfully contacted peer
 				if store != nil && id != "" && id != cons.NodeID() {
 					_ = store.UpsertClusterNode(&ClusterNode{
@@ -101,7 +102,7 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 						LastSeen: time.Now(),
 					})
 				}
-				
+
 				var events []Event
 				if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
 					Logger().Warn("appt_reconcile_decode_failed", "peer", id, "err", err)
@@ -131,51 +132,36 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 					// During partitions, the same user may have different IDs in different partitions.
 					// We use username/email as the stable identifier.
 					var localOwnerID int64
-					if p.OwnerUsername != "" {
-						if localOwner, err := store.GetUserByUsername(p.OwnerUsername); err == nil && localOwner != nil {
-							localOwnerID = localOwner.ID
-						} else {
-							// Owner not found locally, skip this appointment
-							Logger().Debug("appt_reconcile_owner_not_found", "peer", id, "owner_username", p.OwnerUsername)
-							continue
-						}
+					if strings.TrimSpace(p.OwnerUsername) == "" {
+						// Without stable identifier we must skip to avoid assigning to wrong user.
+						Logger().Warn("appt_reconcile_missing_owner_username", "peer", id, "title", p.Title)
+						continue
+					}
+					if localOwner, err := store.GetUserByUsername(p.OwnerUsername); err == nil && localOwner != nil {
+						localOwnerID = localOwner.ID
 					} else {
-						// Fallback: try to use remote ID if username not available (backward compatibility)
-						// But this may cause ID mismatches during reconciliation
-						localOwnerID = p.OwnerID
-						Logger().Warn("appt_reconcile_no_owner_username", "peer", id, "using_remote_id", p.OwnerID)
+						Logger().Debug("appt_reconcile_owner_not_found", "peer", id, "owner_username", p.OwnerUsername)
+						continue
 					}
 
 					// CRITICAL: Map remote group ID to local group ID using group name and creator username
 					// During partitions, the same group may have different IDs in different partitions.
 					var localGroupIDPtr *int64
 					if p.GroupID != nil && *p.GroupID != 0 {
-						if p.GroupName != "" && p.GroupCreatorUsername != "" {
-							// Find group by signature (name + creator)
-							if localCreator, err := store.GetUserByUsername(p.GroupCreatorUsername); err == nil && localCreator != nil {
-								if localGroupID, err := store.FindGroupBySignature(p.GroupName, localCreator.ID, "hierarchical"); err == nil && localGroupID != 0 {
-									localGroupIDPtr = &localGroupID
-								} else {
-									// Group not found locally, skip this appointment (will be retried when group is reconciled)
-									Logger().Debug("appt_reconcile_group_not_found", "peer", id, "group_name", p.GroupName, "creator_username", p.GroupCreatorUsername)
-									continue
-								}
+						if strings.TrimSpace(p.GroupName) == "" || strings.TrimSpace(p.GroupCreatorUsername) == "" || strings.TrimSpace(string(p.GroupType)) == "" {
+							Logger().Warn("appt_reconcile_missing_group_signature", "peer", id, "title", p.Title, "group_id", *p.GroupID)
+							continue
+						}
+						if localCreator, err := store.GetUserByUsername(p.GroupCreatorUsername); err == nil && localCreator != nil {
+							if localGroupID, err := store.FindGroupBySignature(p.GroupName, localCreator.ID, p.GroupType); err == nil && localGroupID != 0 {
+								localGroupIDPtr = &localGroupID
 							} else {
-								// Creator not found, skip
-								Logger().Debug("appt_reconcile_group_creator_not_found", "peer", id, "creator_username", p.GroupCreatorUsername)
+								Logger().Debug("appt_reconcile_group_not_found", "peer", id, "group_name", p.GroupName, "creator_username", p.GroupCreatorUsername)
 								continue
 							}
 						} else {
-							// Fallback: try to use remote ID if group info not available (backward compatibility)
-							// But verify group exists locally
-							if _, err := store.GetGroupByID(*p.GroupID); err == nil {
-								localGroupIDPtr = p.GroupID
-								Logger().Warn("appt_reconcile_no_group_info", "peer", id, "using_remote_group_id", *p.GroupID)
-							} else {
-								// Group doesn't exist locally, skip
-								Logger().Debug("appt_reconcile_group_id_not_found", "peer", id, "group_id", *p.GroupID)
-								continue
-							}
+							Logger().Debug("appt_reconcile_group_creator_not_found", "peer", id, "creator_username", p.GroupCreatorUsername)
+							continue
 						}
 					}
 
