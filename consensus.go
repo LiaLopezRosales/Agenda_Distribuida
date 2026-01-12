@@ -1086,7 +1086,8 @@ func (c *ConsensusImpl) startElection() error {
 	votes := 1 // candidate votes for itself
 	// Use dynamically detected active peers for election majority.
 	peers := c.activePeers(15 * time.Second)
-	totalNodes := len(peers) + 1 // Include self in total count
+	// Track reachable peers dynamically during election to handle partitions correctly
+	reachablePeers := 1 // Start with self
 	ch := make(chan bool, len(peers))
 	for _, id := range peers {
 		if id == c.nodeID {
@@ -1097,17 +1098,26 @@ func (c *ConsensusImpl) startElection() error {
 			ch <- ok
 		}(id)
 	}
-	majority := (totalNodes / 2) + 1
+	// Initial majority based on all known peers (will be recalculated dynamically)
+	totalNodes := len(peers) + 1           // Include self in total count
 	timeout := time.After(3 * time.Second) // Increased timeout for network latency
 	for pending := len(peers); pending > 0; pending-- {
 		select {
 		case ok := <-ch:
+			// Count this peer as reachable (responded, even if vote was denied)
+			reachablePeers++
+			// Recalculate majority based on actually reachable peers
+			// This adapts to network partitions: if only 3 nodes respond, majority = 2
+			reachableTotal := reachablePeers
+			reachableMajority := (reachableTotal / 2) + 1
+
 			if ok {
 				votes++
 			}
 			// Check if we have majority or can use degraded mode
 			attemptedContacts := len(peers) // peers excludes self
-			if votes >= majority {
+			// Use reachable majority for partition-aware elections
+			if votes >= reachableMajority {
 				// Normal case: we have majority
 				c.mu.Lock()
 				c.role = roleLeader
@@ -1125,10 +1135,10 @@ func (c *ConsensusImpl) startElection() error {
 					c.matchIdx[id] = 0
 				}
 				c.mu.Unlock()
-				c.log(slog.LevelInfo, "election_won", "term", term, "votes", votes, "majority", majority)
-				c.audit("election", "node became leader", map[string]any{"term": term, "votes": votes, "majority": majority})
+				c.log(slog.LevelInfo, "election_won", "term", term, "votes", votes, "majority", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
+				c.audit("election", "node became leader", map[string]any{"term": term, "votes": votes, "majority": reachableMajority, "reachable_peers": reachableTotal, "total_known": totalNodes})
 				return nil
-			} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+			} else if votes == 1 && attemptedContacts > 0 && (reachableTotal == 2 || reachableTotal == 3) {
 				// Degraded mode: only for very small clusters where we tried to contact others
 				// but they're unreachable. This prevents split-brain during partitions.
 				c.mu.Lock()
@@ -1147,23 +1157,71 @@ func (c *ConsensusImpl) startElection() error {
 					c.matchIdx[id] = 0
 				}
 				c.mu.Unlock()
-				c.log(slog.LevelWarn, "election_won_degraded", "term", term, "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
-				c.audit("election", "node became leader in degraded mode", map[string]any{"term": term, "votes": votes, "total_nodes": totalNodes})
+				c.log(slog.LevelWarn, "election_won_degraded", "term", term, "votes", votes, "reachable_peers", reachableTotal, "total_known", totalNodes, "attempted", attemptedContacts)
+				c.audit("election", "node became leader in degraded mode", map[string]any{"term": term, "votes": votes, "reachable_peers": reachableTotal, "total_known": totalNodes})
 				return nil
 			}
 			// Continue waiting for more votes
 		case <-timeout:
+			// On timeout, recalculate based on peers that responded
+			reachableTotal := reachablePeers
+			reachableMajority := (reachableTotal / 2) + 1
+			attemptedContacts := len(peers)
+			if votes >= reachableMajority {
+				c.mu.Lock()
+				c.role = roleLeader
+				c.peers.SetLeader(c.nodeID)
+				c.heartbeatFailures = 0
+				c.failedElections = 0
+				lastIdx, _, _ := c.lastIndexTerm()
+				c.nextIdx = make(map[string]int64)
+				c.matchIdx = make(map[string]int64)
+				for _, id := range peers {
+					if id == c.nodeID {
+						continue
+					}
+					c.nextIdx[id] = lastIdx + 1
+					c.matchIdx[id] = 0
+				}
+				c.mu.Unlock()
+				c.log(slog.LevelInfo, "election_won_timeout", "term", term, "votes", votes, "majority", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
+				c.audit("election", "node became leader after timeout", map[string]any{"term": term, "votes": votes, "majority": reachableMajority, "reachable_peers": reachableTotal, "total_known": totalNodes})
+				return nil
+			} else if votes == 1 && attemptedContacts > 0 && (reachableTotal == 2 || reachableTotal == 3) {
+				c.mu.Lock()
+				c.role = roleLeader
+				c.peers.SetLeader(c.nodeID)
+				c.heartbeatFailures = 0
+				c.failedElections = 0
+				lastIdx, _, _ := c.lastIndexTerm()
+				c.nextIdx = make(map[string]int64)
+				c.matchIdx = make(map[string]int64)
+				for _, id := range peers {
+					if id == c.nodeID {
+						continue
+					}
+					c.nextIdx[id] = lastIdx + 1
+					c.matchIdx[id] = 0
+				}
+				c.mu.Unlock()
+				c.log(slog.LevelWarn, "election_won_degraded_timeout", "term", term, "votes", votes, "reachable_peers", reachableTotal, "total_known", totalNodes, "attempted", attemptedContacts)
+				c.audit("election", "node became leader in degraded mode after timeout", map[string]any{"term": term, "votes": votes, "reachable_peers": reachableTotal, "total_known": totalNodes})
+				return nil
+			}
 			c.mu.Lock()
 			if c.failedElections < 10 {
 				c.failedElections++
 			}
 			c.mu.Unlock()
-			c.log(slog.LevelWarn, "election_timeout")
+			c.log(slog.LevelWarn, "election_timeout", "votes", votes, "needed", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
 			return errors.New("election timeout")
 		}
 	}
+	// All peers responded, recalculate based on reachable peers
+	reachableTotal := reachablePeers
+	reachableMajority := (reachableTotal / 2) + 1
 	attemptedContacts := len(peers) // peers excludes self
-	if votes >= majority {
+	if votes >= reachableMajority {
 		// Normal case: we have majority
 		c.mu.Lock()
 		c.role = roleLeader
@@ -1181,10 +1239,10 @@ func (c *ConsensusImpl) startElection() error {
 			c.matchIdx[id] = 0
 		}
 		c.mu.Unlock()
-		c.log(slog.LevelInfo, "election_won", "term", term, "votes", votes, "majority", majority)
-		c.audit("election", "node became leader", map[string]any{"term": term, "votes": votes, "majority": majority})
+		c.log(slog.LevelInfo, "election_won", "term", term, "votes", votes, "majority", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
+		c.audit("election", "node became leader", map[string]any{"term": term, "votes": votes, "majority": reachableMajority, "reachable_peers": reachableTotal, "total_known": totalNodes})
 		return nil
-	} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+	} else if votes == 1 && attemptedContacts > 0 && (reachableTotal == 2 || reachableTotal == 3) {
 		// Degraded mode: only for very small clusters where we tried to contact others
 		// but they're unreachable. This prevents split-brain during partitions.
 		c.mu.Lock()
@@ -1203,8 +1261,8 @@ func (c *ConsensusImpl) startElection() error {
 			c.matchIdx[id] = 0
 		}
 		c.mu.Unlock()
-		c.log(slog.LevelWarn, "election_won_degraded", "term", term, "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
-		c.audit("election", "node became leader in degraded mode", map[string]any{"term": term, "votes": votes, "total_nodes": totalNodes})
+		c.log(slog.LevelWarn, "election_won_degraded", "term", term, "votes", votes, "reachable_peers", reachableTotal, "total_known", totalNodes, "attempted", attemptedContacts)
+		c.audit("election", "node became leader in degraded mode", map[string]any{"term": term, "votes": votes, "reachable_peers": reachableTotal, "total_known": totalNodes})
 		return nil
 	}
 	c.mu.Lock()
@@ -1212,7 +1270,7 @@ func (c *ConsensusImpl) startElection() error {
 		c.failedElections++
 	}
 	c.mu.Unlock()
-	c.log(slog.LevelWarn, "election_failed", "votes", votes, "needed", majority)
+	c.log(slog.LevelWarn, "election_failed", "votes", votes, "needed", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
 	return errors.New("not enough votes")
 }
 
@@ -1229,8 +1287,9 @@ func (c *ConsensusImpl) runPreVote() bool {
 	payload, _ := json.Marshal(req)
 	// Use dynamically detected active peers for pre-vote majority.
 	peers := c.activePeers(15 * time.Second)
+	// Track reachable peers dynamically during pre-vote to handle partitions correctly
+	reachablePeers := 1 // Start with self
 	totalNodes := len(peers) + 1
-	majority := (totalNodes / 2) + 1
 	votes := 1 // local node is implicitly willing to vote for itself
 
 	type res struct {
@@ -1259,35 +1318,55 @@ func (c *ConsensusImpl) runPreVote() bool {
 	for pending := len(peers); pending > 0; pending-- {
 		select {
 		case r := <-ch:
+			// Count this peer as reachable (responded, even if vote was denied)
+			reachablePeers++
+			// Recalculate majority based on actually reachable peers
+			reachableTotal := reachablePeers
+			reachableMajority := (reachableTotal / 2) + 1
+
 			if r.ok {
 				votes++
 			}
 			// Check if we have majority or can use degraded mode
 			attemptedContacts := len(peers) // peers excludes self
-			if votes >= majority {
-				c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
+			if votes >= reachableMajority {
+				c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
 				return true
-			} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+			} else if votes == 1 && attemptedContacts > 0 && (reachableTotal == 2 || reachableTotal == 3) {
 				// Degraded mode: only if we tried to contact others (prevents split-brain)
-				c.log(slog.LevelDebug, "prevote_degraded_mode", "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
+				c.log(slog.LevelDebug, "prevote_degraded_mode", "votes", votes, "reachable_peers", reachableTotal, "total_known", totalNodes, "attempted", attemptedContacts)
 				return true
 			}
 			// Continue waiting for more votes
 		case <-timeout:
-			c.log(slog.LevelWarn, "prevote_timeout", "votes", votes, "majority", majority)
+			// On timeout, recalculate based on peers that responded
+			reachableTotal := reachablePeers
+			reachableMajority := (reachableTotal / 2) + 1
+			attemptedContacts := len(peers)
+			if votes >= reachableMajority {
+				c.log(slog.LevelDebug, "prevote_majority_achieved_timeout", "votes", votes, "majority", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
+				return true
+			} else if votes == 1 && attemptedContacts > 0 && (reachableTotal == 2 || reachableTotal == 3) {
+				c.log(slog.LevelDebug, "prevote_degraded_mode_timeout", "votes", votes, "reachable_peers", reachableTotal, "total_known", totalNodes, "attempted", attemptedContacts)
+				return true
+			}
+			c.log(slog.LevelWarn, "prevote_timeout", "votes", votes, "needed", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
 			return false
 		}
 	}
+	// All peers responded, recalculate based on reachable peers
+	reachableTotal := reachablePeers
+	reachableMajority := (reachableTotal / 2) + 1
 	attemptedContacts := len(peers) // peers excludes self
-	if votes >= majority {
-		c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", majority)
+	if votes >= reachableMajority {
+		c.log(slog.LevelDebug, "prevote_majority_achieved", "votes", votes, "majority", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
 		return true
-	} else if votes == 1 && attemptedContacts > 0 && (totalNodes == 2 || totalNodes == 3) {
+	} else if votes == 1 && attemptedContacts > 0 && (reachableTotal == 2 || reachableTotal == 3) {
 		// Degraded mode: only if we tried to contact others
-		c.log(slog.LevelDebug, "prevote_degraded_mode", "votes", votes, "total_nodes", totalNodes, "attempted", attemptedContacts)
+		c.log(slog.LevelDebug, "prevote_degraded_mode", "votes", votes, "reachable_peers", reachableTotal, "total_known", totalNodes, "attempted", attemptedContacts)
 		return true
 	}
-	c.log(slog.LevelDebug, "prevote_no_majority", "votes", votes, "majority", majority, "total_nodes", totalNodes)
+	c.log(slog.LevelDebug, "prevote_no_majority", "votes", votes, "majority", reachableMajority, "reachable_peers", reachableTotal, "total_known", totalNodes)
 	return false
 }
 
