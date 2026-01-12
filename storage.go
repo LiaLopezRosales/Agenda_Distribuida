@@ -601,8 +601,14 @@ func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status Ap
 	if apptGroupID != nil {
 		groupIDVal = strconv.FormatInt(*apptGroupID, 10)
 	}
-	payload := fmt.Sprintf(`{"appointment_id":%d,"user_id":%d,"username":%q,"status":%q,"appt_owner_username":%q,"appt_group_id":%s,"appt_group_name":%q,"appt_group_creator_username":%q,"appt_title":%q,"appt_start":%q,"appt_end":%q}`,
-		appointmentID, userID, username, status, apptOwnerUsername, groupIDVal, apptGroupName, apptGroupCreatorUsername, apptTitle, apptStart, apptEnd)
+	apptGroupTypeVal := "null"
+	if apptGroupID != nil {
+		if group, err := s.GetGroupByID(*apptGroupID); err == nil && group != nil {
+			apptGroupTypeVal = fmt.Sprintf("%q", group.GroupType)
+		}
+	}
+	payload := fmt.Sprintf(`{"appointment_id":%d,"user_id":%d,"username":%q,"status":%q,"appt_owner_username":%q,"appt_group_id":%s,"appt_group_name":%q,"appt_group_creator_username":%q,"appt_group_type":%s,"appt_title":%q,"appt_start":%q,"appt_end":%q}`,
+		appointmentID, userID, username, status, apptOwnerUsername, groupIDVal, apptGroupName, apptGroupCreatorUsername, apptGroupTypeVal, apptTitle, apptStart, apptEnd)
 	evt := &Event{
 		Entity:   "invitation",
 		EntityID: appointmentID,
@@ -699,16 +705,18 @@ func (s *Storage) CreateAppointment(a *Appointment) error {
 	}
 	// Get group info for ID mapping during reconciliation
 	var groupName, groupCreatorUsername string
+	groupTypeVal := "null"
 	groupIDVal := "null"
 	if a.GroupID != nil {
 		groupIDVal = strconv.FormatInt(*a.GroupID, 10)
 		if group, err := s.GetGroupByID(*a.GroupID); err == nil && group != nil {
 			groupName = group.Name
 			groupCreatorUsername = group.CreatorUserName
+			groupTypeVal = fmt.Sprintf("%q", group.GroupType)
 		}
 	}
-	payload := fmt.Sprintf(`{"owner_id":%d,"owner_username":%q,"group_id":%s,"group_name":%q,"group_creator_username":%q,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
-		a.OwnerID, ownerUsername, groupIDVal, groupName, groupCreatorUsername, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
+	payload := fmt.Sprintf(`{"owner_id":%d,"owner_username":%q,"group_id":%s,"group_name":%q,"group_creator_username":%q,"group_type":%s,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
+		a.OwnerID, ownerUsername, groupIDVal, groupName, groupCreatorUsername, groupTypeVal, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
 	evt := &Event{
 		Entity:     "appointment",
 		EntityID:   a.ID,

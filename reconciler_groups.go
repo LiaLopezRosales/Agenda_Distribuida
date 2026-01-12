@@ -89,13 +89,13 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						goto MEMBERS
 					}
 					defer resp.Body.Close()
-					
+
 					// Verify HTTP status code before decoding
 					if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 						Logger().Debug("group_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
 						goto MEMBERS
 					}
-					
+
 					// Update LastSeen for successfully contacted peer
 					if store != nil && id != "" && id != cons.NodeID() {
 						_ = store.UpsertClusterNode(&ClusterNode{
@@ -105,7 +105,7 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 							LastSeen: time.Now(),
 						})
 					}
-					
+
 					var events []Event
 					if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
 						Logger().Warn("group_reconcile_decode_failed", "peer", id, "err", err)
@@ -125,7 +125,7 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						if p.Name == "" {
 							continue
 						}
-						
+
 						// CRITICAL: Map remote creator ID to local creator ID using username
 						// During partitions, the same user may have different IDs in different partitions.
 						var localCreatorID int64
@@ -145,7 +145,7 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 							// No creator info, skip
 							continue
 						}
-						
+
 						// If group already exists locally by natural key, skip
 						if existingID, err := store.FindGroupBySignature(p.Name, localCreatorID, p.GroupType); err == nil && existingID != 0 {
 							continue
@@ -191,13 +191,13 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						goto UPDATE_STATE
 					}
 					defer resp.Body.Close()
-					
+
 					// Verify HTTP status code before decoding
 					if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 						Logger().Debug("group_member_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
 						goto UPDATE_STATE
 					}
-					
+
 					// Update LastSeen for successfully contacted peer (already updated above, but do it again for consistency)
 					if store != nil && id != "" && id != cons.NodeID() {
 						_ = store.UpsertClusterNode(&ClusterNode{
@@ -207,7 +207,7 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 							LastSeen: time.Now(),
 						})
 					}
-					
+
 					var events []Event
 					if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
 						Logger().Warn("group_member_reconcile_decode_failed", "peer", id, "err", err)
@@ -227,27 +227,21 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						if p.GroupID == 0 {
 							continue
 						}
-						
-						// CRITICAL: Map remote user ID to local user ID using username
-						// During partitions, the same user may have different IDs in different partitions.
+
+						// CRITICAL: Map remote user ID to local user ID using username.
+						// Do NOT fallback to remote IDs: IDs may diverge across partitions.
 						var localUserID int64
-						if p.Username != "" {
-							if localUser, err := store.GetUserByUsername(p.Username); err == nil && localUser != nil {
-								localUserID = localUser.ID
-							} else {
-								// User not found locally, skip this membership
-								Logger().Debug("group_member_reconcile_user_not_found", "peer", id, "username", p.Username)
-								continue
-							}
-						} else if p.UserID != 0 {
-							// Fallback: try to use remote ID if username not available (backward compatibility)
-							localUserID = p.UserID
-							Logger().Warn("group_member_reconcile_no_username", "peer", id, "using_remote_id", p.UserID)
-						} else {
-							// No user info, skip
+						if strings.TrimSpace(p.Username) == "" {
+							Logger().Warn("group_member_reconcile_missing_username", "peer", id, "group_id", p.GroupID)
 							continue
 						}
-						
+						if localUser, err := store.GetUserByUsername(p.Username); err == nil && localUser != nil {
+							localUserID = localUser.ID
+						} else {
+							Logger().Debug("group_member_reconcile_user_not_found", "peer", id, "username", p.Username)
+							continue
+						}
+
 						// Ensure the group exists locally; if not, skip until next iteration
 						if _, err := store.GetGroupByID(p.GroupID); err != nil {
 							continue
