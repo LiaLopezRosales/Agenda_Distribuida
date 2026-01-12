@@ -13,7 +13,8 @@ import (
 // eventually present on all nodes by replaying repair.ensure_notification
 // operations based on local notification events.
 func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore) {
-	interval := 30 * time.Second
+	// Reduced interval for faster reconciliation to avoid leader changes interrupting it
+	interval := 10 * time.Second
 	client := &http.Client{Timeout: 3 * time.Second}
 	secret := strings.TrimSpace(os.Getenv("CLUSTER_HMAC_SECRET"))
 	if secret == "" {
@@ -28,18 +29,18 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 	perPeer := make(map[string]*peerState)
 
 	type notifPayload struct {
-		// We only know user_id from the row, type and payload come from Event.
-		// The user_id is not encoded in the payload; we will need to hydrate it
-		// by looking up the notification row when necessary.
+		UserID  int64  `json:"user_id"`
+		Username string `json:"username"` // For ID mapping during reconciliation
+		Type    string `json:"type"`
+		Payload string `json:"payload"`   // This is the actual notification payload
 	}
 
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			if !cons.IsLeader() {
-				continue
-			}
+			// Reconcile from all reachable peers (works on both leaders and followers)
+			// This ensures reconciliation continues even if leadership changes.
 			ids := peers.ListPeers()
 			for _, id := range ids {
 				if id == "" || id == cons.NodeID() {
@@ -106,14 +107,54 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 					if ev.CreatedAt.After(maxTS) {
 						maxTS = ev.CreatedAt
 					}
-					// For now, we only reconcile notifications where we can
-					// reliably reconstruct (user_id,type,payload). Since Event
-					// only stores payload, we will skip this pass and expect
-					// that important notifications are attached to appointments
-					// and groups already reconciled.
-					_ = json.Unmarshal // no-op to avoid unused import errors
-					_ = notifPayload{}
-					_ = ev
+					if ev.Payload == "" {
+						continue
+					}
+					var p notifPayload
+					if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
+						Logger().Debug("notification_reconcile_decode_payload_failed", "peer", id, "err", err)
+						continue
+					}
+					if p.Type == "" || p.Payload == "" {
+						continue
+					}
+					
+					// CRITICAL: Map remote user ID to local user ID using username
+					// During partitions, the same user may have different IDs in different partitions.
+					var localUserID int64
+					if p.Username != "" {
+						if localUser, err := store.GetUserByUsername(p.Username); err == nil && localUser != nil {
+							localUserID = localUser.ID
+						} else {
+							// User not found locally, skip this notification
+							Logger().Debug("notification_reconcile_user_not_found", "peer", id, "username", p.Username)
+							continue
+						}
+					} else if p.UserID != 0 {
+						// Fallback: try to use remote ID if username not available (backward compatibility)
+						localUserID = p.UserID
+						Logger().Warn("notification_reconcile_no_username", "peer", id, "using_remote_id", p.UserID)
+					} else {
+						// No user info, skip
+						Logger().Debug("notification_reconcile_no_user_info", "peer", id)
+						continue
+					}
+					
+					// If notification already exists locally, skip
+					if existingID, err := store.FindNotificationBySignature(localUserID, p.Type, p.Payload); err == nil && existingID != 0 {
+						continue
+					}
+					
+					entry, err := BuildEntryRepairEnsureNotification(localUserID, p.Type, p.Payload)
+					if err != nil {
+						Logger().Warn("notification_reconcile_build_entry_failed", "peer", id, "username", p.Username, "type", p.Type, "err", err)
+						continue
+					}
+					if err := cons.Propose(entry); err != nil {
+						Logger().Warn("notification_reconcile_propose_failed", "peer", id, "username", p.Username, "type", p.Type, "err", err)
+						continue
+					}
+					Logger().Debug("notification_reconcile_proposed", "peer", id, "username", p.Username, "type", p.Type)
 				}
 
 				if !maxTS.IsZero() {

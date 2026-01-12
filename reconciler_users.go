@@ -13,7 +13,8 @@ import (
 // when leader, periodically pulls user registration audit logs from peers
 // and proposes RepairEnsureUser entries for users that are missing locally.
 func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
-	interval := 30 * time.Second
+	// Reduced interval for faster reconciliation to avoid leader changes interrupting it
+	interval := 10 * time.Second
 	client := &http.Client{Timeout: 3 * time.Second}
 	secret := strings.TrimSpace(os.Getenv("CLUSTER_HMAC_SECRET"))
 	if secret == "" {
@@ -32,9 +33,9 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			if !cons.IsLeader() {
-				continue
-			}
+			// Reconcile from all reachable peers (works on both leaders and followers)
+			// This ensures reconciliation continues even if leadership changes.
+			// Entries are proposed via Raft and will be applied on all nodes.
 			ids := peers.ListPeers()
 			for _, id := range ids {
 				if id == "" || id == cons.NodeID() {
@@ -117,6 +118,9 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 					username, _ := payload["username"].(string)
 					email, _ := payload["email"].(string)
 					displayName, _ := payload["display_name"].(string)
+					// Note: user_id is extracted but not used since EnsureUser ignores it
+					// and creates a new ID based on username/email matching
+					_, _ = payload["user_id"].(float64) // Extract but ignore for now
 					if strings.TrimSpace(username) == "" && strings.TrimSpace(email) == "" {
 						continue
 					}
@@ -139,13 +143,14 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 					}
 					entryLog, err := BuildEntryRepairEnsureUser(u)
 					if err != nil {
-						Logger().Warn("user_reconcile_build_entry_failed", "peer", id, "err", err)
+						Logger().Warn("user_reconcile_build_entry_failed", "peer", id, "username", username, "email", email, "err", err)
 						continue
 					}
 					if err := cons.Propose(entryLog); err != nil {
-						Logger().Warn("user_reconcile_propose_failed", "peer", id, "err", err)
+						Logger().Warn("user_reconcile_propose_failed", "peer", id, "username", username, "email", email, "err", err)
 						continue
 					}
+					Logger().Debug("user_reconcile_proposed", "peer", id, "username", username, "email", email)
 				}
 
 				if !maxTS.IsZero() {

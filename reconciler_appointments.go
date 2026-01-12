@@ -13,7 +13,8 @@ import (
 // node is leader, periodically pulls appointment creation events from peers
 // and proposes Raft entries to ensure missing appointments are recreated.
 func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore) {
-	interval := 30 * time.Second
+	// Reduced interval for faster reconciliation to avoid leader changes interrupting it
+	interval := 10 * time.Second
 	client := &http.Client{Timeout: 3 * time.Second}
 	secret := strings.TrimSpace(os.Getenv("CLUSTER_HMAC_SECRET"))
 	if secret == "" {
@@ -28,22 +29,24 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 	perPeer := make(map[string]*peerState)
 
 	type apptPayload struct {
-		OwnerID     int64   `json:"owner_id"`
-		GroupID     *int64  `json:"group_id"`
-		Title       string  `json:"title"`
-		Description string  `json:"description"`
-		Start       string  `json:"start"`
-		End         string  `json:"end"`
-		Privacy     Privacy `json:"privacy"`
+		OwnerID              int64   `json:"owner_id"`
+		OwnerUsername        string  `json:"owner_username"` // For ID mapping during reconciliation
+		GroupID              *int64  `json:"group_id"`
+		GroupName            string  `json:"group_name"`             // For group ID mapping
+		GroupCreatorUsername string  `json:"group_creator_username"` // For group ID mapping
+		Title                string  `json:"title"`
+		Description          string  `json:"description"`
+		Start                string  `json:"start"`
+		End                  string  `json:"end"`
+		Privacy              Privacy `json:"privacy"`
 	}
 
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			if !cons.IsLeader() {
-				continue
-			}
+			// Reconcile from all reachable peers (works on both leaders and followers)
+			// This ensures reconciliation continues even if leadership changes.
 			ids := peers.ListPeers()
 			for _, id := range ids {
 				if id == "" || id == cons.NodeID() {
@@ -124,45 +127,92 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 						continue
 					}
 
-					// Determine group signature pointer
-					var groupIDPtr *int64
+					// CRITICAL: Map remote owner ID to local owner ID using username
+					// During partitions, the same user may have different IDs in different partitions.
+					// We use username/email as the stable identifier.
+					var localOwnerID int64
+					if p.OwnerUsername != "" {
+						if localOwner, err := store.GetUserByUsername(p.OwnerUsername); err == nil && localOwner != nil {
+							localOwnerID = localOwner.ID
+						} else {
+							// Owner not found locally, skip this appointment
+							Logger().Debug("appt_reconcile_owner_not_found", "peer", id, "owner_username", p.OwnerUsername)
+							continue
+						}
+					} else {
+						// Fallback: try to use remote ID if username not available (backward compatibility)
+						// But this may cause ID mismatches during reconciliation
+						localOwnerID = p.OwnerID
+						Logger().Warn("appt_reconcile_no_owner_username", "peer", id, "using_remote_id", p.OwnerID)
+					}
+
+					// CRITICAL: Map remote group ID to local group ID using group name and creator username
+					// During partitions, the same group may have different IDs in different partitions.
+					var localGroupIDPtr *int64
 					if p.GroupID != nil && *p.GroupID != 0 {
-						groupIDPtr = p.GroupID
+						if p.GroupName != "" && p.GroupCreatorUsername != "" {
+							// Find group by signature (name + creator)
+							if localCreator, err := store.GetUserByUsername(p.GroupCreatorUsername); err == nil && localCreator != nil {
+								if localGroupID, err := store.FindGroupBySignature(p.GroupName, localCreator.ID, "hierarchical"); err == nil && localGroupID != 0 {
+									localGroupIDPtr = &localGroupID
+								} else {
+									// Group not found locally, skip this appointment (will be retried when group is reconciled)
+									Logger().Debug("appt_reconcile_group_not_found", "peer", id, "group_name", p.GroupName, "creator_username", p.GroupCreatorUsername)
+									continue
+								}
+							} else {
+								// Creator not found, skip
+								Logger().Debug("appt_reconcile_group_creator_not_found", "peer", id, "creator_username", p.GroupCreatorUsername)
+								continue
+							}
+						} else {
+							// Fallback: try to use remote ID if group info not available (backward compatibility)
+							// But verify group exists locally
+							if _, err := store.GetGroupByID(*p.GroupID); err == nil {
+								localGroupIDPtr = p.GroupID
+								Logger().Warn("appt_reconcile_no_group_info", "peer", id, "using_remote_group_id", *p.GroupID)
+							} else {
+								// Group doesn't exist locally, skip
+								Logger().Debug("appt_reconcile_group_id_not_found", "peer", id, "group_id", *p.GroupID)
+								continue
+							}
+						}
 					}
 
 					// If appointment already exists locally, skip
-					if existingID, err := store.FindAppointmentBySignature(p.OwnerID, groupIDPtr, start, end, p.Title); err == nil && existingID != 0 {
+					if existingID, err := store.FindAppointmentBySignature(localOwnerID, localGroupIDPtr, start, end, p.Title); err == nil && existingID != 0 {
 						continue
 					}
 
-					// Reconstruct minimal appointment
+					// Reconstruct minimal appointment with LOCAL owner ID and LOCAL group ID
 					a := Appointment{
 						Title:       p.Title,
 						Description: p.Description,
-						OwnerID:     p.OwnerID,
+						OwnerID:     localOwnerID, // Use local ID, not remote ID
 						Start:       start,
 						End:         end,
 						Privacy:     p.Privacy,
 						OriginNode:  ev.OriginNode,
 					}
-					if groupIDPtr != nil {
-						a.GroupID = groupIDPtr
+					if localGroupIDPtr != nil {
+						a.GroupID = localGroupIDPtr // Use local group ID, not remote ID
 					}
 
 					var entry LogEntry
 					if a.GroupID == nil {
-						entry, err = BuildEntryApptCreatePersonal(p.OwnerID, a)
+						entry, err = BuildEntryApptCreatePersonal(localOwnerID, a) // Use local ID
 					} else {
-						entry, err = BuildEntryApptCreateGroup(p.OwnerID, a)
+						entry, err = BuildEntryApptCreateGroup(localOwnerID, a) // Use local ID
 					}
 					if err != nil {
-						Logger().Warn("appt_reconcile_build_entry_failed", "peer", id, "err", err)
+						Logger().Warn("appt_reconcile_build_entry_failed", "peer", id, "title", p.Title, "owner_username", p.OwnerUsername, "err", err)
 						continue
 					}
 					if err := cons.Propose(entry); err != nil {
-						Logger().Warn("appt_reconcile_propose_failed", "peer", id, "err", err)
+						Logger().Warn("appt_reconcile_propose_failed", "peer", id, "title", p.Title, "owner_username", p.OwnerUsername, "err", err)
 						continue
 					}
+					Logger().Debug("appt_reconcile_proposed", "peer", id, "title", p.Title, "owner_username", p.OwnerUsername, "group_id", a.GroupID)
 				}
 
 				if !maxTS.IsZero() {
