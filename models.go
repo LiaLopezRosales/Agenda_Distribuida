@@ -30,7 +30,7 @@ const (
 
 // ---------- core models ----------
 type User struct {
-	ID           int64     `json:"id" db:"id"`
+	ID           string    `json:"id" db:"id"`
 	Username     string    `json:"username" db:"username"`
 	Email        string    `json:"email" db:"email"`
 	PasswordHash string    `json:"-" db:"password_hash"` // never serializar
@@ -40,32 +40,32 @@ type User struct {
 }
 
 type Group struct {
-	ID              int64     `json:"id" db:"id"`
+	ID              string    `json:"id" db:"id"`
 	Name            string    `json:"name" db:"name"`
 	Description     string    `json:"description,omitempty" db:"description"`
 	CreatedAt       time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
-	CreatorID       int64     `json:"creator_id" db:"creator_id"`
+	CreatorID       string    `json:"creator_id" db:"creator_id"`
 	CreatorUserName string    `json:"creator_username,omitempty" db:"creator_username"`
 	GroupType       GroupType `json:"group_type" db:"group_type"` // "hierarchical" or "non_hierarchical"
 }
 
 // GroupMember con Rank para jerarquías dinámicas
 type GroupMember struct {
-	GroupID   int64     `json:"group_id" db:"group_id"`
-	UserID    int64     `json:"user_id" db:"user_id"`
+	GroupID   string    `json:"group_id" db:"group_id"`
+	UserID    string    `json:"user_id" db:"user_id"`
 	Rank      int       `json:"rank" db:"rank"`
-	AddedBy   *int64    `json:"added_by,omitempty" db:"added_by"`
+	AddedBy   *string   `json:"added_by,omitempty" db:"added_by"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	Username  string    `json:"username,omitempty"` // <-- Añadido para respuesta
 }
 
 type Appointment struct {
-	ID          int64      `json:"id" db:"id"`
+	ID          string     `json:"id" db:"id"`
 	Title       string     `json:"title" db:"title"`
 	Description string     `json:"description,omitempty" db:"description"`
-	OwnerID     int64      `json:"owner_id" db:"owner_id"`           // quien lo creó
-	GroupID     *int64     `json:"group_id,omitempty" db:"group_id"` // si es cita de grupo
+	OwnerID     string     `json:"owner_id" db:"owner_id"`           // quien lo creó
+	GroupID     *string    `json:"group_id,omitempty" db:"group_id"` // si es cita de grupo
 	Start       time.Time  `json:"start" db:"start_ts"`              // almacenar como timestamp
 	End         time.Time  `json:"end" db:"end_ts"`
 	Privacy     Privacy    `json:"privacy" db:"privacy"`
@@ -80,9 +80,9 @@ type Appointment struct {
 }
 
 type Participant struct {
-	ID            int64      `json:"id" db:"id"`
-	AppointmentID int64      `json:"appointment_id" db:"appointment_id"`
-	UserID        int64      `json:"user_id" db:"user_id"`
+	ID            string     `json:"id" db:"id"`
+	AppointmentID string     `json:"appointment_id" db:"appointment_id"`
+	UserID        string     `json:"user_id" db:"user_id"`
 	Status        ApptStatus `json:"status" db:"status"` // pending, accepted, declined, auto
 	IsOptional    bool       `json:"is_optional" db:"is_optional"`
 	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
@@ -90,8 +90,8 @@ type Participant struct {
 }
 
 type Notification struct {
-	ID        int64      `json:"id" db:"id"`
-	UserID    int64      `json:"user_id" db:"user_id"`
+	ID        string     `json:"id" db:"id"`
+	UserID    string     `json:"user_id" db:"user_id"`
 	Type      string     `json:"type" db:"type"`       // "invite","created","accepted",...
 	Payload   string     `json:"payload" db:"payload"` // JSON serializado
 	ReadAt    *time.Time `json:"read_at,omitempty" db:"read_at"`
@@ -125,7 +125,7 @@ type RaftState struct {
 type Event struct {
 	ID         int64     `json:"id" db:"id"`
 	Entity     string    `json:"entity" db:"entity"` // "appointment","group",...
-	EntityID   int64     `json:"entity_id" db:"entity_id"`
+	EntityID   string    `json:"entity_id" db:"entity_id"`
 	Action     string    `json:"action" db:"action"` // "create","update","delete"
 	Payload    string    `json:"payload" db:"payload"`
 	CreatedAt  time.Time `json:"created_at" db:"created_at"`
@@ -143,9 +143,9 @@ type EventFilter struct {
 
 // ParticipantDetails extends Participant with user information
 type ParticipantDetails struct {
-	ID            int64      `json:"id" db:"id"`
-	AppointmentID int64      `json:"appointment_id" db:"appointment_id"`
-	UserID        int64      `json:"user_id" db:"user_id"`
+	ID            string     `json:"id" db:"id"`
+	AppointmentID string     `json:"appointment_id" db:"appointment_id"`
+	UserID        string     `json:"user_id" db:"user_id"`
 	Status        ApptStatus `json:"status" db:"status"`
 	IsOptional    bool       `json:"is_optional" db:"is_optional"`
 	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
@@ -169,7 +169,7 @@ type AuditLog struct {
 	Action     string    `json:"action" db:"action"`
 	Level      string    `json:"level" db:"level"`
 	Message    string    `json:"message" db:"message"`
-	ActorID    *int64    `json:"actor_id,omitempty" db:"actor_id"`
+	ActorID    *string   `json:"actor_id,omitempty" db:"actor_id"`
 	RequestID  string    `json:"request_id" db:"request_id"`
 	NodeID     string    `json:"node_id" db:"node_id"`
 	Payload    string    `json:"payload" db:"payload"`

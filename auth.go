@@ -21,7 +21,7 @@ var jwtKey = []byte("supersecretkey")
 
 // Claims personalizados para JWT
 type Claims struct {
-	UserID   int64  `json:"user_id"`
+	UserID   string `json:"user_id"`
 	Username string `json:"username"`
 	jwt.RegisteredClaims
 }

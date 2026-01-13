@@ -31,12 +31,12 @@ const (
 )
 
 type repairUserClearEmailPayload struct {
-	UserID int64  `json:"user_id"`
+	UserID string `json:"user_id"`
 	Email  string `json:"email"`
 }
 
 type repairEnsureUserPayload struct {
-	ID           int64  `json:"id"`
+	ID           string `json:"id"`
 	Username     string `json:"username"`
 	Email        string `json:"email"`
 	PasswordHash string `json:"password_hash"`
@@ -44,20 +44,20 @@ type repairEnsureUserPayload struct {
 }
 
 type repairEnsureGroupMemberPayload struct {
-	GroupID int64 `json:"group_id"`
-	UserID  int64 `json:"user_id"`
-	Rank    int   `json:"rank"`
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+	Rank    int    `json:"rank"`
 }
 
 type repairEnsureParticipantPayload struct {
-	AppointmentID int64      `json:"appointment_id"`
-	UserID        int64      `json:"user_id"`
+	AppointmentID string     `json:"appointment_id"`
+	UserID        string     `json:"user_id"`
 	Status        ApptStatus `json:"status"`
 	IsOptional    bool       `json:"is_optional"`
 }
 
 type repairEnsureNotificationPayload struct {
-	UserID  int64  `json:"user_id"`
+	UserID  string `json:"user_id"`
 	Type    string `json:"type"`
 	Payload string `json:"payload"`
 }
@@ -66,14 +66,14 @@ type userCreatePayload struct {
 	Username     string `json:"username"`
 	Email        string `json:"email"`
 	PasswordHash string `json:"password_hash"`
-	ID           int64  `json:"id"`
+	ID           string `json:"id"`
 	DisplayName  string `json:"display_name"`
 }
 
 type apptCreatePayload struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
-	OwnerID     int64     `json:"owner_id"`
+	OwnerID     string    `json:"owner_id"`
 	Start       time.Time `json:"start"`
 	End         time.Time `json:"end"`
 	Privacy     Privacy   `json:"privacy"`
@@ -82,15 +82,15 @@ type apptCreatePayload struct {
 type apptCreateGroupPayload struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
-	OwnerID     int64     `json:"owner_id"`
-	GroupID     int64     `json:"group_id"`
+	OwnerID     string    `json:"owner_id"`
+	GroupID     string    `json:"group_id"`
 	Start       time.Time `json:"start"`
 	End         time.Time `json:"end"`
 	Privacy     Privacy   `json:"privacy"`
 }
 
 type apptUpdatePayload struct {
-	AppointmentID int64      `json:"appointment_id"`
+	AppointmentID string     `json:"appointment_id"`
 	Title         *string    `json:"title,omitempty"`
 	Description   *string    `json:"description,omitempty"`
 	Start         *time.Time `json:"start,omitempty"`
@@ -99,48 +99,48 @@ type apptUpdatePayload struct {
 }
 
 type apptDeletePayload struct {
-	AppointmentID int64 `json:"appointment_id"`
+	AppointmentID string `json:"appointment_id"`
 }
 
 type userUpdateProfilePayload struct {
-	UserID      int64   `json:"user_id"`
+	UserID      string  `json:"user_id"`
 	Username    *string `json:"username,omitempty"`
 	Email       *string `json:"email,omitempty"`
 	DisplayName *string `json:"display_name,omitempty"`
 }
 
 type userUpdatePasswordPayload struct {
-	UserID       int64  `json:"user_id"`
+	UserID       string `json:"user_id"`
 	PasswordHash string `json:"password_hash"`
 }
 
 type groupCreatePayload struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	CreatorID   int64     `json:"creator_id"`
+	CreatorID   string    `json:"creator_id"`
 	CreatorUser string    `json:"creator_username"`
 	GroupType   GroupType `json:"group_type"`
 }
 
 type groupUpdatePayload struct {
-	GroupID     int64   `json:"group_id"`
+	GroupID     string  `json:"group_id"`
 	Name        *string `json:"name,omitempty"`
 	Description *string `json:"description,omitempty"`
 }
 
 type groupDeletePayload struct {
-	GroupID int64 `json:"group_id"`
+	GroupID string `json:"group_id"`
 }
 
 type groupMemberPayload struct {
-	GroupID int64 `json:"group_id"`
-	UserID  int64 `json:"user_id"`
-	Rank    int   `json:"rank"`
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+	Rank    int    `json:"rank"`
 }
 
 type invitationStatusPayload struct {
-	AppointmentID int64      `json:"appointment_id"`
-	UserID        int64      `json:"user_id"`
+	AppointmentID string     `json:"appointment_id"`
+	UserID        string     `json:"user_id"`
 	Status        ApptStatus `json:"status"`
 }
 
@@ -152,7 +152,7 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
-			if existingID, err := store.FindAppointmentBySignature(p.OwnerID, nil, p.Start, p.End, p.Title); err == nil && existingID != 0 {
+			if existingID, err := store.FindAppointmentBySignature(p.OwnerID, nil, p.Start, p.End, p.Title); err == nil && existingID != "" {
 				if _, err := store.GetParticipantByAppointmentAndUser(existingID, p.OwnerID); err == nil {
 					return nil
 				}
@@ -206,7 +206,7 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
-			if existingID, err := store.FindAppointmentBySignature(p.OwnerID, &p.GroupID, p.Start, p.End, p.Title); err == nil && existingID != 0 {
+			if existingID, err := store.FindAppointmentBySignature(p.OwnerID, &p.GroupID, p.Start, p.End, p.Title); err == nil && existingID != "" {
 				return nil
 			}
 			gID := p.GroupID
@@ -449,9 +449,9 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				statusStr = "declined"
 			}
 			payload := struct {
-				AppointmentID int64  `json:"appointment_id"`
+				AppointmentID string `json:"appointment_id"`
 				Title         string `json:"title"`
-				UserID        int64  `json:"user_id"`
+				UserID        string `json:"user_id"`
 				UserUsername  string `json:"user_username"`
 				UserName      string `json:"user_display_name"`
 				Status        string `json:"status"`

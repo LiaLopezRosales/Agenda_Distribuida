@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,8 +43,21 @@ func NewStorage(dsn string) (*Storage, error) {
 // ====================
 func (s *Storage) migrate() error {
 	schema := `
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS group_members;
+DROP TABLE IF EXISTS appointments;
+DROP TABLE IF EXISTS participants;
+DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS events;
+DROP TABLE IF EXISTS cluster_nodes;
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS raft_log;
+DROP TABLE IF EXISTS raft_meta;
+DROP TABLE IF EXISTS raft_applied;
+
 CREATE TABLE IF NOT EXISTS users (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT PRIMARY KEY,
 	username TEXT UNIQUE NOT NULL,
 	email TEXT UNIQUE,
 	password_hash TEXT NOT NULL,
@@ -55,31 +67,31 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
-    creator_id INTEGER,
+    creator_id TEXT,
     creator_username TEXT,
     group_type TEXT NOT NULL DEFAULT 'hierarchical'
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
-	group_id INTEGER NOT NULL,
-	user_id INTEGER NOT NULL,
+	group_id TEXT NOT NULL,
+	user_id TEXT NOT NULL,
 	rank INTEGER NOT NULL DEFAULT 0,
-	added_by INTEGER,
+	added_by TEXT,
 	created_at DATETIME NOT NULL,
 	PRIMARY KEY (group_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS appointments (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT PRIMARY KEY,
 	title TEXT NOT NULL,
 	description TEXT,
-	owner_id INTEGER NOT NULL,
-	group_id INTEGER,
+	owner_id TEXT NOT NULL,
+	group_id TEXT,
 	start_ts INTEGER NOT NULL,
 	end_ts INTEGER NOT NULL,
 	privacy TEXT NOT NULL,
@@ -92,18 +104,20 @@ CREATE TABLE IF NOT EXISTS appointments (
 );
 
 CREATE TABLE IF NOT EXISTS participants (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	appointment_id INTEGER NOT NULL,
-	user_id INTEGER NOT NULL,
+	id TEXT PRIMARY KEY,
+	appointment_id TEXT NOT NULL,
+	user_id TEXT NOT NULL,
 	status TEXT NOT NULL,
 	is_optional INTEGER DEFAULT 0,
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS participants_appt_user_uniq ON participants(appointment_id, user_id);
+
 CREATE TABLE IF NOT EXISTS notifications (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	user_id INTEGER NOT NULL,
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL,
 	type TEXT NOT NULL,
 	payload TEXT,
 	read_at DATETIME,
@@ -113,7 +127,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE TABLE IF NOT EXISTS events (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	entity TEXT NOT NULL,
-	entity_id INTEGER NOT NULL,
+	entity_id TEXT NOT NULL,
 	action TEXT NOT NULL,
 	payload TEXT NOT NULL,
 	created_at DATETIME NOT NULL,
@@ -135,8 +149,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     component TEXT NOT NULL,
     action TEXT NOT NULL,
     level TEXT NOT NULL,
-    message TEXT,
-    actor_id INTEGER,
+    message TEXT NOT NULL,
+    actor_id TEXT,
     request_id TEXT,
     node_id TEXT,
     payload TEXT,
@@ -187,13 +201,15 @@ INSERT OR IGNORE INTO raft_meta(key, value) VALUES
 // ====================
 func (s *Storage) CreateUser(u *User) error {
 	now := time.Now()
-	res, err := s.db.Exec(`INSERT INTO users(username,email,password_hash,display_name,created_at,updated_at)
-		VALUES(?,?,?,?,?,?)`, u.Username, u.Email, u.PasswordHash, u.DisplayName, now, now)
+	// B1: deterministic ID from username
+	if strings.TrimSpace(u.ID) == "" {
+		u.ID = UserIDFromUsername(u.Username)
+	}
+	_, err := s.db.Exec(`INSERT INTO users(id,username,email,password_hash,display_name,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?)`, u.ID, u.Username, u.Email, u.PasswordHash, u.DisplayName, now, now)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
-	u.ID = id
 	u.CreatedAt = now
 	u.UpdatedAt = now
 	return nil
@@ -219,7 +235,7 @@ func (s *Storage) GetUserByEmail(email string) (*User, error) {
 	return &u, nil
 }
 
-func (s *Storage) GetUserByID(id int64) (*User, error) {
+func (s *Storage) GetUserByID(id string) (*User, error) {
 	row := s.db.QueryRow(`SELECT id, username, email, password_hash, display_name, created_at, updated_at FROM users WHERE id=?`, id)
 	var u User
 	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.DisplayName, &u.CreatedAt, &u.UpdatedAt); err != nil {
@@ -241,7 +257,7 @@ func (s *Storage) UpdateUser(user *User) error {
 	return nil
 }
 
-func (s *Storage) UpdatePassword(userID int64, newPasswordHash string) error {
+func (s *Storage) UpdatePassword(userID string, newPasswordHash string) error {
 	now := time.Now()
 	_, err := s.db.Exec(`UPDATE users 
 		SET password_hash=?, updated_at=?
@@ -342,7 +358,7 @@ func (s *Storage) EnsureUser(u *User) error {
 	return nil
 }
 
-func (s *Storage) ClearUserEmailIfMatches(userID int64, email string) error {
+func (s *Storage) ClearUserEmailIfMatches(userID string, email string) error {
 	_, err := s.db.Exec(`UPDATE users SET email=NULL, updated_at=? WHERE id=? AND email=?`, time.Now(), userID, email)
 	return err
 }
@@ -352,18 +368,20 @@ func (s *Storage) ClearUserEmailIfMatches(userID int64, email string) error {
 // ====================
 func (s *Storage) CreateGroup(g *Group) error {
 	now := time.Now()
-	res, err := s.db.Exec(`INSERT INTO groups(name, description, created_at, updated_at, creator_id, creator_username, group_type) VALUES(?,?,?,?,?,?,?)`,
-		g.Name, g.Description, now, now, g.CreatorID, g.CreatorUserName, g.GroupType)
+	// B1: deterministic ID from stable signature
+	if strings.TrimSpace(g.ID) == "" {
+		g.ID = GroupIDFromSignature(g.GroupType, g.CreatorUserName, g.Name)
+	}
+	_, err := s.db.Exec(`INSERT INTO groups(id, name, description, created_at, updated_at, creator_id, creator_username, group_type) VALUES(?,?,?,?,?,?,?,?)`,
+		g.ID, g.Name, g.Description, now, now, g.CreatorID, g.CreatorUserName, g.GroupType)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
-	g.ID = id
 	g.CreatedAt = now
 	g.UpdatedAt = now
 	// Persist group create event for reconciliation
-	payload := fmt.Sprintf(`{"name":%q,"description":%q,"creator_id":%d,"creator_username":%q,"group_type":%q}`,
-		g.Name, g.Description, g.CreatorID, g.CreatorUserName, g.GroupType)
+	payload := fmt.Sprintf(`{"id":%q,"name":%q,"description":%q,"creator_id":%q,"creator_username":%q,"group_type":%q}`,
+		g.ID, g.Name, g.Description, g.CreatorID, g.CreatorUserName, g.GroupType)
 	evt := &Event{
 		Entity:     "group",
 		EntityID:   g.ID,
@@ -376,7 +394,7 @@ func (s *Storage) CreateGroup(g *Group) error {
 	return nil
 }
 
-func (s *Storage) AddGroupMember(groupID, userID int64, rank int, addedBy *int64) error {
+func (s *Storage) AddGroupMember(groupID, userID string, rank int, addedBy *string) error {
 	now := time.Now()
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO group_members(group_id,user_id,rank,added_by,created_at)
 		VALUES(?,?,?,?,?)`, groupID, userID, rank, addedBy, now)
@@ -388,7 +406,7 @@ func (s *Storage) AddGroupMember(groupID, userID int64, rank int, addedBy *int64
 	if user, err := s.GetUserByID(userID); err == nil && user != nil {
 		username = user.Username
 	}
-	payload := fmt.Sprintf(`{"group_id":%d,"user_id":%d,"username":%q,"rank":%d}`, groupID, userID, username, rank)
+	payload := fmt.Sprintf(`{"group_id":%q,"user_id":%q,"username":%q,"rank":%d}`, groupID, userID, username, rank)
 	evt := &Event{
 		Entity:     "group_member",
 		EntityID:   groupID,
@@ -401,11 +419,11 @@ func (s *Storage) AddGroupMember(groupID, userID int64, rank int, addedBy *int64
 	return nil
 }
 
-func (s *Storage) EnsureGroupMember(groupID, userID int64, rank int, addedBy *int64) error {
+func (s *Storage) EnsureGroupMember(groupID, userID string, rank int, addedBy *string) error {
 	return s.AddGroupMember(groupID, userID, rank, addedBy)
 }
 
-func (s *Storage) GetMemberRank(groupID, userID int64) (int, error) {
+func (s *Storage) GetMemberRank(groupID, userID string) (int, error) {
 	row := s.db.QueryRow(`SELECT rank FROM group_members WHERE group_id=? AND user_id=?`, groupID, userID)
 	var r int
 	if err := row.Scan(&r); err != nil {
@@ -414,7 +432,7 @@ func (s *Storage) GetMemberRank(groupID, userID int64) (int, error) {
 	return r, nil
 }
 
-func (s *Storage) IsSuperior(groupID, userA, userB int64) (bool, error) {
+func (s *Storage) IsSuperior(groupID, userA, userB string) (bool, error) {
 	rankA, err := s.GetMemberRank(groupID, userA)
 	if err != nil {
 		return false, err
@@ -426,7 +444,7 @@ func (s *Storage) IsSuperior(groupID, userA, userB int64) (bool, error) {
 	return rankA > rankB, nil
 }
 
-func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
+func (s *Storage) GetGroupMembers(groupID string) ([]GroupMember, error) {
 	rows, err := s.db.Query(`
         SELECT gm.group_id, gm.user_id, gm.rank, gm.added_by, gm.created_at, u.username
         FROM group_members gm
@@ -452,7 +470,7 @@ func (s *Storage) GetGroupMembers(groupID int64) ([]GroupMember, error) {
 }
 
 // Fetch group by ID
-func (s *Storage) GetGroupByID(id int64) (*Group, error) {
+func (s *Storage) GetGroupByID(id string) (*Group, error) {
 	row := s.db.QueryRow(`SELECT id,name,description,created_at,updated_at,creator_id,creator_username,group_type FROM groups WHERE id=?`, id)
 	var g Group
 	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName, &g.GroupType); err != nil {
@@ -463,14 +481,38 @@ func (s *Storage) GetGroupByID(id int64) (*Group, error) {
 
 // FindGroupBySignature provides a best-effort natural key to detect if a group
 // already exists based on creator and name/group_type.
-func (s *Storage) FindGroupBySignature(name string, creatorID int64, groupType GroupType) (int64, error) {
-	var id int64
-	err := s.db.QueryRow(`SELECT id FROM groups WHERE name=? AND creator_id=? AND group_type=? ORDER BY id DESC LIMIT 1`,
+func (s *Storage) FindGroupBySignature(name string, creatorID string, groupType GroupType) (string, error) {
+	var id string
+	err := s.db.QueryRow(`SELECT id FROM groups WHERE name=? AND creator_id=? AND group_type=? LIMIT 1`,
 		name, creatorID, groupType).Scan(&id)
 	if err == sql.ErrNoRows {
-		return 0, nil
+		return "", nil
 	}
 	return id, err
+}
+
+// List all groups the user belongs to
+func (s *Storage) GetGroupsForUser(userID string) ([]Group, error) {
+	rows, err := s.db.Query(`
+		SELECT g.id, g.name, g.description, g.created_at, g.updated_at, g.creator_id, g.creator_username, g.group_type
+		FROM groups g
+		JOIN group_members gm ON gm.group_id = g.id
+		WHERE gm.user_id = ?
+		ORDER BY g.name ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName, &g.GroupType); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, nil
 }
 
 // UpdateGroup updates group information
@@ -488,7 +530,7 @@ func (s *Storage) UpdateGroup(g *Group) error {
 }
 
 // DeleteGroup deletes a group and all its members
-func (s *Storage) DeleteGroup(groupID int64) error {
+func (s *Storage) DeleteGroup(groupID string) error {
 	// Start transaction to ensure atomicity
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -523,7 +565,7 @@ func (s *Storage) DeleteGroup(groupID int64) error {
 }
 
 // UpdateGroupMember updates a member's rank
-func (s *Storage) UpdateGroupMember(groupID, userID int64, rank int) error {
+func (s *Storage) UpdateGroupMember(groupID, userID string, rank int) error {
 	_, err := s.db.Exec(`UPDATE group_members 
 		SET rank=?
 		WHERE group_id=? AND user_id=?`,
@@ -532,7 +574,7 @@ func (s *Storage) UpdateGroupMember(groupID, userID int64, rank int) error {
 }
 
 // RemoveGroupMember removes a member from a group
-func (s *Storage) RemoveGroupMember(groupID, userID int64) error {
+func (s *Storage) RemoveGroupMember(groupID, userID string) error {
 	// Start transaction to ensure atomicity
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -565,7 +607,8 @@ func (s *Storage) RemoveGroupMember(groupID, userID int64) error {
 }
 
 // UpdateParticipantStatus updates a participant's status (accept/reject invitation)
-func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status ApptStatus) error {
+
+func (s *Storage) UpdateParticipantStatus(appointmentID, userID string, status ApptStatus) error {
 	now := time.Now()
 	_, err := s.db.Exec(`UPDATE participants 
 		SET status=?, updated_at=?
@@ -581,7 +624,7 @@ func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status Ap
 	}
 	// Get appointment info for ID mapping
 	var apptOwnerUsername, apptGroupName, apptGroupCreatorUsername, apptTitle, apptStart, apptEnd string
-	var apptGroupID *int64
+	var apptGroupID *string
 	if appt, err := s.GetAppointmentByID(appointmentID); err == nil && appt != nil {
 		apptTitle = appt.Title
 		apptStart = appt.Start.Format(time.RFC3339)
@@ -599,7 +642,7 @@ func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status Ap
 	}
 	groupIDVal := "null"
 	if apptGroupID != nil {
-		groupIDVal = strconv.FormatInt(*apptGroupID, 10)
+		groupIDVal = fmt.Sprintf("%q", *apptGroupID)
 	}
 	apptGroupTypeVal := "null"
 	if apptGroupID != nil {
@@ -607,7 +650,7 @@ func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status Ap
 			apptGroupTypeVal = fmt.Sprintf("%q", group.GroupType)
 		}
 	}
-	payload := fmt.Sprintf(`{"appointment_id":%d,"user_id":%d,"username":%q,"status":%q,"appt_owner_username":%q,"appt_group_id":%s,"appt_group_name":%q,"appt_group_creator_username":%q,"appt_group_type":%s,"appt_title":%q,"appt_start":%q,"appt_end":%q}`,
+	payload := fmt.Sprintf(`{"appointment_id":%q,"user_id":%q,"username":%q,"status":%q,"appt_owner_username":%q,"appt_group_id":%s,"appt_group_name":%q,"appt_group_creator_username":%q,"appt_group_type":%s,"appt_title":%q,"appt_start":%q,"appt_end":%q}`,
 		appointmentID, userID, username, status, apptOwnerUsername, groupIDVal, apptGroupName, apptGroupCreatorUsername, apptGroupTypeVal, apptTitle, apptStart, apptEnd)
 	evt := &Event{
 		Entity:   "invitation",
@@ -622,7 +665,7 @@ func (s *Storage) UpdateParticipantStatus(appointmentID, userID int64, status Ap
 }
 
 // GetParticipantByAppointmentAndUser gets a specific participant
-func (s *Storage) GetParticipantByAppointmentAndUser(appointmentID, userID int64) (*Participant, error) {
+func (s *Storage) GetParticipantByAppointmentAndUser(appointmentID, userID string) (*Participant, error) {
 	row := s.db.QueryRow(`SELECT id, appointment_id, user_id, status, is_optional, created_at, updated_at 
 		FROM participants WHERE appointment_id=? AND user_id=?`, appointmentID, userID)
 	var p Participant
@@ -634,66 +677,54 @@ func (s *Storage) GetParticipantByAppointmentAndUser(appointmentID, userID int64
 
 // FindAppointmentBySignature tries to find an existing (non-deleted) appointment by a
 // natural signature. This is used to provide best-effort idempotency for create ops.
-func (s *Storage) FindAppointmentBySignature(ownerID int64, groupID *int64, start, end time.Time, title string) (int64, error) {
+
+func (s *Storage) FindAppointmentBySignature(ownerID string, groupID *string, start, end time.Time, title string) (string, error) {
 	if groupID == nil {
-		var id int64
+		var id string
 		err := s.db.QueryRow(`SELECT id FROM appointments
 			WHERE owner_id=? AND group_id IS NULL AND start_ts=? AND end_ts=? AND title=? AND deleted=0
-			ORDER BY id DESC LIMIT 1`, ownerID, start.Unix(), end.Unix(), title).Scan(&id)
+			ORDER BY created_at DESC LIMIT 1`, ownerID, start.Unix(), end.Unix(), title).Scan(&id)
 		if err == sql.ErrNoRows {
-			return 0, nil
+			return "", nil
 		}
 		return id, err
 	}
-	var id int64
+	var id string
 	err := s.db.QueryRow(`SELECT id FROM appointments
 		WHERE owner_id=? AND group_id=? AND start_ts=? AND end_ts=? AND title=? AND deleted=0
-		ORDER BY id DESC LIMIT 1`, ownerID, *groupID, start.Unix(), end.Unix(), title).Scan(&id)
+		ORDER BY created_at DESC LIMIT 1`, ownerID, *groupID, start.Unix(), end.Unix(), title).Scan(&id)
 	if err == sql.ErrNoRows {
-		return 0, nil
+		return "", nil
 	}
 	return id, err
 }
 
 // List all groups the user belongs to
-func (s *Storage) GetGroupsForUser(userID int64) ([]Group, error) {
-	rows, err := s.db.Query(`
-		SELECT g.id, g.name, g.description, g.created_at, g.updated_at, g.creator_id, g.creator_username, g.group_type
-		FROM groups g
-		JOIN group_members gm ON gm.group_id = g.id
-		WHERE gm.user_id = ?
-		ORDER BY g.name ASC`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var groups []Group
-	for rows.Next() {
-		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedAt, &g.UpdatedAt, &g.CreatorID, &g.CreatorUserName, &g.GroupType); err != nil {
-			return nil, err
-		}
-		groups = append(groups, g)
-	}
-	return groups, nil
-}
-
 // ====================
 // Citas
 // ====================
 func (s *Storage) CreateAppointment(a *Appointment) error {
 	now := time.Now()
-	res, err := s.db.Exec(`INSERT INTO appointments(title,description,owner_id,group_id,start_ts,end_ts,privacy,status,version,origin_node,deleted,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,?)`,
-		a.Title, a.Description, a.OwnerID, a.GroupID,
+	// B1: deterministic ID from signature
+	if strings.TrimSpace(a.ID) == "" {
+		ownerUsername := a.OwnerID
+		if owner, err := s.GetUserByID(a.OwnerID); err == nil && owner != nil && strings.TrimSpace(owner.Username) != "" {
+			ownerUsername = owner.Username
+		}
+		groupSig := ""
+		if a.GroupID != nil {
+			groupSig = *a.GroupID
+		}
+		a.ID = AppointmentIDFromSignature(ownerUsername, groupSig, a.Start, a.End, a.Title)
+	}
+	_, err := s.db.Exec(`INSERT INTO appointments(id,title,description,owner_id,group_id,start_ts,end_ts,privacy,status,version,origin_node,deleted,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.Title, a.Description, a.OwnerID, a.GroupID,
 		a.Start.Unix(), a.End.Unix(), a.Privacy, a.Status,
 		1, a.OriginNode, 0, now, now)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
-	a.ID = id
 	a.CreatedAt = now
 	a.UpdatedAt = now
 
@@ -708,14 +739,14 @@ func (s *Storage) CreateAppointment(a *Appointment) error {
 	groupTypeVal := "null"
 	groupIDVal := "null"
 	if a.GroupID != nil {
-		groupIDVal = strconv.FormatInt(*a.GroupID, 10)
+		groupIDVal = fmt.Sprintf("%q", *a.GroupID)
 		if group, err := s.GetGroupByID(*a.GroupID); err == nil && group != nil {
 			groupName = group.Name
 			groupCreatorUsername = group.CreatorUserName
 			groupTypeVal = fmt.Sprintf("%q", group.GroupType)
 		}
 	}
-	payload := fmt.Sprintf(`{"owner_id":%d,"owner_username":%q,"group_id":%s,"group_name":%q,"group_creator_username":%q,"group_type":%s,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
+	payload := fmt.Sprintf(`{"owner_id":%q,"owner_username":%q,"group_id":%s,"group_name":%q,"group_creator_username":%q,"group_type":%s,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
 		a.OwnerID, ownerUsername, groupIDVal, groupName, groupCreatorUsername, groupTypeVal, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
 	evt := &Event{
 		Entity:     "appointment",
@@ -742,7 +773,7 @@ func (s *Storage) UpdateAppointment(a *Appointment) error {
 	return nil
 }
 
-func (s *Storage) DeleteAppointment(appointmentID int64) error {
+func (s *Storage) DeleteAppointment(appointmentID string) error {
 	now := time.Now()
 	_, err := s.db.Exec(`UPDATE appointments 
 		SET deleted=1, updated_at=?, version=version+1
@@ -753,20 +784,21 @@ func (s *Storage) DeleteAppointment(appointmentID int64) error {
 
 func (s *Storage) AddParticipant(p *Participant) error {
 	now := time.Now()
-	res, err := s.db.Exec(`INSERT INTO participants(appointment_id,user_id,status,is_optional,created_at,updated_at)
-		VALUES(?,?,?,?,?,?)`,
-		p.AppointmentID, p.UserID, p.Status, p.IsOptional, now, now)
+	if strings.TrimSpace(p.ID) == "" {
+		p.ID = stableID("participant", p.AppointmentID+":"+p.UserID)
+	}
+	_, err := s.db.Exec(`INSERT INTO participants(id,appointment_id,user_id,status,is_optional,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?)`,
+		p.ID, p.AppointmentID, p.UserID, p.Status, p.IsOptional, now, now)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
-	p.ID = id
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	return nil
 }
 
-func (s *Storage) EnsureParticipant(appointmentID, userID int64, status ApptStatus, isOptional bool) error {
+func (s *Storage) EnsureParticipant(appointmentID, userID string, status ApptStatus, isOptional bool) error {
 	if existing, err := s.GetParticipantByAppointmentAndUser(appointmentID, userID); err == nil && existing != nil {
 		if existing.Status != status {
 			return s.UpdateParticipantStatus(appointmentID, userID, status)
@@ -776,7 +808,7 @@ func (s *Storage) EnsureParticipant(appointmentID, userID int64, status ApptStat
 	return s.AddParticipant(&Participant{AppointmentID: appointmentID, UserID: userID, Status: status, IsOptional: isOptional})
 }
 
-func (s *Storage) HasConflict(userID int64, start, end time.Time) (bool, error) {
+func (s *Storage) HasConflict(userID string, start, end time.Time) (bool, error) {
 	q := `
 SELECT COUNT(1)
 FROM appointments a
@@ -793,7 +825,7 @@ WHERE p.user_id = ?
 	return cnt > 0, nil
 }
 
-func (s *Storage) HasConflictExcluding(userID int64, start, end time.Time, excludeAppointmentID int64) (bool, error) {
+func (s *Storage) HasConflictExcluding(userID string, start, end time.Time, excludeAppointmentID string) (bool, error) {
 	q := `
 SELECT COUNT(1)
 FROM appointments a
@@ -816,6 +848,14 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 	if a.GroupID == nil {
 		return nil, errors.New("group appointment requires GroupID")
 	}
+	// B1: deterministic appointment ID
+	if strings.TrimSpace(a.ID) == "" {
+		ownerUsername := a.OwnerID
+		if owner, err := s.GetUserByID(a.OwnerID); err == nil && owner != nil && strings.TrimSpace(owner.Username) != "" {
+			ownerUsername = owner.Username
+		}
+		a.ID = AppointmentIDFromSignature(ownerUsername, *a.GroupID, a.Start, a.End, a.Title)
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -825,17 +865,15 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 
 	now := time.Now()
 	// Insertar cita
-	res, err := tx.Exec(`INSERT INTO appointments(title,description,owner_id,group_id,start_ts,end_ts,privacy,status,version,origin_node,deleted,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.Title, a.Description, a.OwnerID, a.GroupID,
+	_, err = tx.Exec(`INSERT INTO appointments(id,title,description,owner_id,group_id,start_ts,end_ts,privacy,status,version,origin_node,deleted,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.Title, a.Description, a.OwnerID, a.GroupID,
 		a.Start.Unix(), a.End.Unix(), a.Privacy, a.Status,
 		1, a.OriginNode, 0, now, now)
 	if err != nil {
 		rollback()
 		return nil, err
 	}
-	apptID, _ := res.LastInsertId()
-	a.ID = apptID
 	a.CreatedAt = now
 	a.UpdatedAt = now
 
@@ -879,17 +917,17 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 				status = StatusAuto
 			}
 		}
-		res2, err := tx.Exec(`INSERT INTO participants(appointment_id,user_id,status,is_optional,created_at,updated_at)
-			VALUES(?,?,?,?,?,?)`,
-			apptID, m.UserID, status, 0, now, now)
+		pid := stableID("participant", a.ID+":"+m.UserID)
+		_, err := tx.Exec(`INSERT INTO participants(id,appointment_id,user_id,status,is_optional,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?)`,
+			pid, a.ID, m.UserID, status, 0, now, now)
 		if err != nil {
 			rollback()
 			return nil, err
 		}
-		pid, _ := res2.LastInsertId()
 		p := Participant{
 			ID:            pid,
-			AppointmentID: apptID,
+			AppointmentID: a.ID,
 			UserID:        m.UserID,
 			Status:        status,
 			IsOptional:    false,
@@ -912,11 +950,12 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 		}
 
 		// Notificación inicial con payload enriquecido
-		payload := fmt.Sprintf(`{"appointment_id":%d,"title":"%s","description":"%s","start":"%s","end":"%s","group_id":%d,"group_name":"%s","created_by_id":%d,"created_by_username":"%s","created_by_display_name":"%s","status":"%s","privacy":"%s"}`,
-			apptID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339),
+		payload := fmt.Sprintf(`{"appointment_id":%q,"title":%q,"description":%q,"start":%q,"end":%q,"group_id":%q,"group_name":%q,"created_by_id":%q,"created_by_username":%q,"created_by_display_name":%q,"status":%q,"privacy":%q}`,
+			a.ID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339),
 			*a.GroupID, groupName, a.OwnerID, creatorUsername, creatorDisplayName, status, a.Privacy)
-		if _, err := tx.Exec(`INSERT INTO notifications(user_id,type,payload,created_at)
-			VALUES(?,?,?,?)`, m.UserID, "invite", payload, now); err != nil {
+		nid := stableID("notification", m.UserID+":invite:"+a.ID)
+		if _, err := tx.Exec(`INSERT INTO notifications(id,user_id,type,payload,created_at)
+			VALUES(?,?,?,?,?)`, nid, m.UserID, "invite", payload, now); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -940,7 +979,7 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 		groupName = group.Name
 		groupCreatorUsername = group.CreatorUserName
 	}
-	payload := fmt.Sprintf(`{"owner_id":%d,"owner_username":%q,"group_id":%d,"group_name":%q,"group_creator_username":%q,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
+	payload := fmt.Sprintf(`{"owner_id":%q,"owner_username":%q,"group_id":%q,"group_name":%q,"group_creator_username":%q,"title":%q,"description":%q,"start":%q,"end":%q,"privacy":%q}`,
 		a.OwnerID, ownerUsername, *a.GroupID, groupName, groupCreatorUsername, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339), a.Privacy)
 	evt := &Event{
 		Entity:     "appointment",
@@ -960,14 +999,15 @@ func (s *Storage) CreateGroupAppointment(a *Appointment) ([]Participant, error) 
 // ====================
 func (s *Storage) AddNotification(n *Notification) error {
 	now := time.Now()
-	res, err := s.db.Exec(`INSERT INTO notifications(user_id,type,payload,read_at,created_at)
-		VALUES(?,?,?,?,?)`,
-		n.UserID, n.Type, n.Payload, n.ReadAt, now)
+	if strings.TrimSpace(n.ID) == "" {
+		n.ID = stableID("notification", n.UserID+":"+n.Type+":"+n.Payload)
+	}
+	_, err := s.db.Exec(`INSERT INTO notifications(id,user_id,type,payload,read_at,created_at)
+		VALUES(?,?,?,?,?,?)`,
+		n.ID, n.UserID, n.Type, n.Payload, n.ReadAt, now)
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
-	n.ID = id
 	n.CreatedAt = now
 	// Emit event so notifications can be reconciled across partitions.
 	// Include user_id and username for ID mapping during reconciliation
@@ -976,7 +1016,7 @@ func (s *Storage) AddNotification(n *Notification) error {
 		username = user.Username
 	}
 	// Enrich payload with user_id and username for reconciliation
-	enrichedPayload := fmt.Sprintf(`{"user_id":%d,"username":%q,"type":%q,"payload":%q}`,
+	enrichedPayload := fmt.Sprintf(`{"user_id":%q,"username":%q,"type":%q,"payload":%q}`,
 		n.UserID, username, n.Type, n.Payload)
 	evt := &Event{
 		Entity:   "notification",
@@ -989,14 +1029,14 @@ func (s *Storage) AddNotification(n *Notification) error {
 	return nil
 }
 
-func (s *Storage) FindNotificationBySignature(userID int64, nType, payload string) (int64, error) {
-	row := s.db.QueryRow(`SELECT id FROM notifications WHERE user_id=? AND type=? AND payload=? ORDER BY id DESC LIMIT 1`, userID, nType, payload)
-	var id int64
+func (s *Storage) FindNotificationBySignature(userID string, nType, payload string) (string, error) {
+	row := s.db.QueryRow(`SELECT id FROM notifications WHERE user_id=? AND type=? AND payload=? LIMIT 1`, userID, nType, payload)
+	var id string
 	if err := row.Scan(&id); err != nil {
 		if err == sql.ErrNoRows {
-			return 0, nil
+			return "", nil
 		}
-		return 0, err
+		return "", err
 	}
 	return id, nil
 }
@@ -1006,13 +1046,13 @@ func (s *Storage) EnsureNotification(n *Notification) error {
 	if err != nil {
 		return err
 	}
-	if id != 0 {
+	if id != "" {
 		return nil
 	}
 	return s.AddNotification(n)
 }
 
-func (s *Storage) GetUserNotifications(userID int64) ([]Notification, error) {
+func (s *Storage) GetUserNotifications(userID string) ([]Notification, error) {
 	rows, err := s.db.Query(`SELECT id,user_id,type,payload,read_at,created_at FROM notifications WHERE user_id=?`, userID)
 	if err != nil {
 		return nil, err
@@ -1030,14 +1070,15 @@ func (s *Storage) GetUserNotifications(userID int64) ([]Notification, error) {
 }
 
 // 🔥 NUEVO: marcar notificación como leída
-func (s *Storage) MarkNotificationRead(notificationID int64) error {
+func (s *Storage) MarkNotificationRead(notificationID string) error {
 	now := time.Now()
 	_, err := s.db.Exec(`UPDATE notifications SET read_at=? WHERE id=?`, now, notificationID)
 	return err
 }
 
 // 🔥 NUEVO: obtener solo notificaciones no leídas
-func (s *Storage) GetUnreadNotifications(userID int64) ([]Notification, error) {
+
+func (s *Storage) GetUnreadNotifications(userID string) ([]Notification, error) {
 	rows, err := s.db.Query(`SELECT id,user_id,type,payload,read_at,created_at FROM notifications WHERE user_id=? AND read_at IS NULL`, userID)
 	if err != nil {
 		return nil, err
@@ -1061,7 +1102,7 @@ func (s *Storage) GetUnreadNotifications(userID int64) ([]Notification, error) {
 
 // Devuelve todas las citas de un usuario en un rango de tiempo.
 // Incluye citas personales y grupales donde el usuario es participante.
-func (s *Storage) GetUserAgenda(userID int64, start, end time.Time) ([]Appointment, error) {
+func (s *Storage) GetUserAgenda(userID string, start, end time.Time) ([]Appointment, error) {
 	q := `
 SELECT a.id, a.title, a.description, a.owner_id, a.group_id,
        a.start_ts, a.end_ts, a.privacy, a.status,
@@ -1096,7 +1137,7 @@ ORDER BY a.start_ts ASC`
 
 // Devuelve todas las citas de un grupo en un rango de tiempo.
 // Incluye tanto citas creadas a nivel de grupo como personales de sus miembros (si se requiere).
-func (s *Storage) GetGroupAgenda(groupID int64, start, end time.Time) ([]Appointment, error) {
+func (s *Storage) GetGroupAgenda(groupID string, start, end time.Time) ([]Appointment, error) {
 	q := `
 SELECT a.id, a.title, a.description, a.owner_id, a.group_id,
        a.start_ts, a.end_ts, a.privacy, a.status,
@@ -1253,13 +1294,13 @@ func (s *Storage) ListAuditLogs(filter AuditFilter) ([]AuditLog, error) {
 	var logs []AuditLog
 	for rows.Next() {
 		var entry AuditLog
-		var actor sql.NullInt64
+		var actor sql.NullString
 		if err := rows.Scan(&entry.ID, &entry.Component, &entry.Action, &entry.Level, &entry.Message,
 			&actor, &entry.RequestID, &entry.NodeID, &entry.Payload, &entry.OccurredAt); err != nil {
 			return nil, err
 		}
 		if actor.Valid {
-			val := actor.Int64
+			val := actor.String
 			entry.ActorID = &val
 		}
 		logs = append(logs, entry)
@@ -1353,7 +1394,7 @@ func (s *Storage) ListClusterNodes() ([]ClusterNode, error) {
 // ====================
 
 // GetAppointmentByID retrieves a specific appointment by ID
-func (s *Storage) GetAppointmentByID(appointmentID int64) (*Appointment, error) {
+func (s *Storage) GetAppointmentByID(appointmentID string) (*Appointment, error) {
 	q := `
 SELECT a.id, a.title, a.description, a.owner_id, a.group_id,
        a.start_ts, a.end_ts, a.privacy, a.status,
@@ -1378,61 +1419,30 @@ WHERE a.id = ? AND a.deleted = 0`
 }
 
 // GetAppointmentParticipants retrieves all participants for an appointment with user details
-func (s *Storage) GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error) {
-	// Check if all users exist, create missing ones if needed
-	rows, err := s.db.Query(`SELECT DISTINCT user_id FROM participants WHERE appointment_id = ?`, appointmentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var userIDs []int64
-	for rows.Next() {
-		var userID int64
-		if err := rows.Scan(&userID); err != nil {
-			continue
-		}
-		userIDs = append(userIDs, userID)
-	}
-
-	// Create missing users
-	for _, userID := range userIDs {
-		var count int
-		err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE id = ?`, userID).Scan(&count)
-		if err == nil && count == 0 {
-			// Create a placeholder user
-			_, _ = s.db.Exec(`INSERT INTO users(id, username, email, password_hash, display_name, created_at, updated_at) 
-				VALUES(?, ?, ?, ?, ?, ?, ?)`,
-				userID, fmt.Sprintf("user_%d", userID), "", "", fmt.Sprintf("User %d", userID), time.Now(), time.Now())
-		}
-	}
-
+func (s *Storage) GetAppointmentParticipants(appointmentID string) ([]ParticipantDetails, error) {
 	q := `
-SELECT p.id, p.appointment_id, p.user_id, p.status, p.is_optional,
-       p.created_at, p.updated_at, 
-       COALESCE(u.username, 'Unknown') as username, 
-       COALESCE(u.display_name, 'Unknown User') as display_name
+SELECT p.id, p.appointment_id, p.user_id, p.status, p.is_optional, p.created_at, p.updated_at,
+       u.username, u.display_name
 FROM participants p
-LEFT JOIN users u ON p.user_id = u.id
+JOIN users u ON u.id = p.user_id
 WHERE p.appointment_id = ?
-ORDER BY p.created_at ASC`
+ORDER BY u.username ASC`
 
-	rows, err = s.db.Query(q, appointmentID)
+	rows, err := s.db.Query(q, appointmentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var participants []ParticipantDetails
+	var out []ParticipantDetails
 	for rows.Next() {
-		var p ParticipantDetails
-		err := rows.Scan(
-			&p.ID, &p.AppointmentID, &p.UserID, &p.Status, &p.IsOptional,
-			&p.CreatedAt, &p.UpdatedAt, &p.Username, &p.DisplayName)
-		if err != nil {
+		var pd ParticipantDetails
+		var isOpt int
+		if err := rows.Scan(&pd.ID, &pd.AppointmentID, &pd.UserID, &pd.Status, &isOpt, &pd.CreatedAt, &pd.UpdatedAt, &pd.Username, &pd.DisplayName); err != nil {
 			return nil, err
 		}
-		participants = append(participants, p)
+		pd.IsOptional = isOpt != 0
+		out = append(out, pd)
 	}
-	return participants, nil
+	return out, rows.Err()
 }

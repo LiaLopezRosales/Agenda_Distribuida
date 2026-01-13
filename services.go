@@ -63,7 +63,7 @@ func NewGroupService(groups GroupRepository, notes NotificationRepository) Group
 }
 
 // 🔥 MODIFICADO: crear grupo y añadir owner como admin (rank alto)
-func (s *groupService) CreateGroup(ownerID int64, name, description string) (*Group, error) {
+func (s *groupService) CreateGroup(ownerID string, name, description string) (*Group, error) {
 	now := time.Now()
 	g := &Group{
 		Name:        name,
@@ -74,7 +74,7 @@ func (s *groupService) CreateGroup(ownerID int64, name, description string) (*Gr
 		GroupType:   GroupTypeHierarchical, // Por defecto, grupos jerárquicos
 	}
 	// Intentar obtener el nombre de usuario del creador
-	if userRepo, ok := s.groups.(interface{ GetUserByID(int64) (*User, error) }); ok {
+	if userRepo, ok := s.groups.(interface{ GetUserByID(string) (*User, error) }); ok {
 		if creator, err := userRepo.GetUserByID(ownerID); err == nil {
 			g.CreatorUserName = creator.Username
 		}
@@ -88,13 +88,13 @@ func (s *groupService) CreateGroup(ownerID int64, name, description string) (*Gr
 	}
 	// notificar dueño con detalles enriquecidos
 	var creatorUsername, creatorDisplayName string
-	if userRepo, ok := s.groups.(interface{ GetUserByID(int64) (*User, error) }); ok {
+	if userRepo, ok := s.groups.(interface{ GetUserByID(string) (*User, error) }); ok {
 		if creator, err := userRepo.GetUserByID(ownerID); err == nil && creator != nil {
 			creatorUsername = creator.Username
 			creatorDisplayName = creator.DisplayName
 		}
 	}
-	payload := fmt.Sprintf(`{"group_id":%d,"group_name":"%s","group_description":"%s","created_by_id":%d,"created_by_username":"%s","created_by_display_name":"%s"}`,
+	payload := fmt.Sprintf(`{"group_id":%q,"group_name":%q,"group_description":%q,"created_by_id":%q,"created_by_username":%q,"created_by_display_name":%q}`,
 		g.ID, g.Name, g.Description, ownerID, creatorUsername, creatorDisplayName)
 	if err := s.notes.AddNotification(&Notification{
 		UserID:    ownerID,
@@ -108,7 +108,7 @@ func (s *groupService) CreateGroup(ownerID int64, name, description string) (*Gr
 }
 
 // UpdateGroup updates group information
-func (s *groupService) UpdateGroup(ownerID int64, groupID int64, name, description string) (*Group, error) {
+func (s *groupService) UpdateGroup(ownerID string, groupID string, name, description string) (*Group, error) {
 	// Verify ownership
 	group, err := s.groups.GetGroupByID(groupID)
 	if err != nil {
@@ -136,7 +136,7 @@ func (s *groupService) UpdateGroup(ownerID int64, groupID int64, name, descripti
 }
 
 // DeleteGroup deletes a group and all its members
-func (s *groupService) DeleteGroup(ownerID int64, groupID int64) error {
+func (s *groupService) DeleteGroup(ownerID string, groupID string) error {
 	// Verify ownership
 	group, err := s.groups.GetGroupByID(groupID)
 	if err != nil {
@@ -157,7 +157,7 @@ func (s *groupService) DeleteGroup(ownerID int64, groupID int64) error {
 }
 
 // 🔥 MODIFICADO: añadir miembro con verificación de jerarquía
-func (s *groupService) AddMember(actorID, groupID, userID int64, rank int) error {
+func (s *groupService) AddMember(actorID, groupID, userID string, rank int) error {
 	// Obtener información del grupo para determinar el tipo
 	group, err := s.groups.GetGroupByID(groupID)
 	if err != nil {
@@ -193,13 +193,13 @@ func (s *groupService) AddMember(actorID, groupID, userID int64, rank int) error
 		groupName = groupInfo.Name
 	}
 	var actorUsername, actorDisplayName string
-	if userRepo, ok := s.groups.(interface{ GetUserByID(int64) (*User, error) }); ok {
+	if userRepo, ok := s.groups.(interface{ GetUserByID(string) (*User, error) }); ok {
 		if actor, err := userRepo.GetUserByID(actorID); err == nil && actor != nil {
 			actorUsername = actor.Username
 			actorDisplayName = actor.DisplayName
 		}
 	}
-	payload := fmt.Sprintf(`{"group_id":%d,"group_name":"%s","added_by_id":%d,"added_by_username":"%s","added_by_display_name":"%s","rank":%d}`,
+	payload := fmt.Sprintf(`{"group_id":%q,"group_name":%q,"added_by_id":%q,"added_by_username":%q,"added_by_display_name":%q,"rank":%d}`,
 		groupID, groupName, actorID, actorUsername, actorDisplayName, rank)
 	return s.notes.AddNotification(&Notification{
 		UserID:    userID,
@@ -210,7 +210,7 @@ func (s *groupService) AddMember(actorID, groupID, userID int64, rank int) error
 }
 
 // UpdateMember updates a member's rank
-func (s *groupService) UpdateMember(actorID, groupID, userID int64, rank int) error {
+func (s *groupService) UpdateMember(actorID, groupID, userID string, rank int) error {
 	// Verify actor has permission (must be higher rank)
 	actorRank, err := s.groups.GetMemberRank(groupID, actorID)
 	if err != nil {
@@ -239,7 +239,7 @@ func (s *groupService) UpdateMember(actorID, groupID, userID int64, rank int) er
 }
 
 // RemoveMember removes a member from a group
-func (s *groupService) RemoveMember(actorID, groupID, userID int64) error {
+func (s *groupService) RemoveMember(actorID, groupID, userID string) error {
 	// Verify actor has permission (must be higher rank)
 	actorRank, err := s.groups.GetMemberRank(groupID, actorID)
 	if err != nil {
@@ -268,7 +268,7 @@ func (s *groupService) RemoveMember(actorID, groupID, userID int64) error {
 }
 
 // AcceptInvitation accepts an appointment invitation
-func (s *appointmentService) AcceptInvitation(userID int64, appointmentID int64) error {
+func (s *appointmentService) AcceptInvitation(userID string, appointmentID string) error {
 	// Verify the user is a participant
 	participant, err := s.apps.GetParticipantByAppointmentAndUser(appointmentID, userID)
 	if err != nil {
@@ -292,13 +292,13 @@ func (s *appointmentService) AcceptInvitation(userID int64, appointmentID int64)
 	appointment, err := s.apps.GetAppointmentByID(appointmentID)
 	if err == nil && appointment != nil {
 		var userUsername, userDisplayName string
-		if userRepo, ok := s.apps.(interface{ GetUserByID(int64) (*User, error) }); ok {
+		if userRepo, ok := s.apps.(interface{ GetUserByID(string) (*User, error) }); ok {
 			if user, err := userRepo.GetUserByID(userID); err == nil && user != nil {
 				userUsername = user.Username
 				userDisplayName = user.DisplayName
 			}
 		}
-		payload := fmt.Sprintf(`{"appointment_id":%d,"title":"%s","user_id":%d,"user_username":"%s","user_display_name":"%s","status":"accepted","start":"%s","end":"%s"}`,
+		payload := fmt.Sprintf(`{"appointment_id":%q,"title":%q,"user_id":%q,"user_username":%q,"user_display_name":%q,"status":"accepted","start":%q,"end":%q}`,
 			appointmentID, appointment.Title, userID, userUsername, userDisplayName,
 			appointment.Start.Format(time.RFC3339), appointment.End.Format(time.RFC3339))
 		_ = s.notes.AddNotification(&Notification{
@@ -313,7 +313,7 @@ func (s *appointmentService) AcceptInvitation(userID int64, appointmentID int64)
 }
 
 // RejectInvitation rejects an appointment invitation
-func (s *appointmentService) RejectInvitation(userID int64, appointmentID int64) error {
+func (s *appointmentService) RejectInvitation(userID string, appointmentID string) error {
 	// Verify the user is a participant
 	participant, err := s.apps.GetParticipantByAppointmentAndUser(appointmentID, userID)
 	if err != nil {
@@ -337,13 +337,13 @@ func (s *appointmentService) RejectInvitation(userID int64, appointmentID int64)
 	appointment, err := s.apps.GetAppointmentByID(appointmentID)
 	if err == nil && appointment != nil {
 		var userUsername, userDisplayName string
-		if userRepo, ok := s.apps.(interface{ GetUserByID(int64) (*User, error) }); ok {
+		if userRepo, ok := s.apps.(interface{ GetUserByID(string) (*User, error) }); ok {
 			if user, err := userRepo.GetUserByID(userID); err == nil && user != nil {
 				userUsername = user.Username
 				userDisplayName = user.DisplayName
 			}
 		}
-		payload := fmt.Sprintf(`{"appointment_id":%d,"title":"%s","user_id":%d,"user_username":"%s","user_display_name":"%s","status":"declined","start":"%s","end":"%s"}`,
+		payload := fmt.Sprintf(`{"appointment_id":%q,"title":%q,"user_id":%q,"user_username":%q,"user_display_name":%q,"status":"declined","start":%q,"end":%q}`,
 			appointmentID, appointment.Title, userID, userUsername, userDisplayName,
 			appointment.Start.Format(time.RFC3339), appointment.End.Format(time.RFC3339))
 		_ = s.notes.AddNotification(&Notification{
@@ -384,7 +384,7 @@ func (s *appointmentService) SetConsensus(c Consensus) {
 }
 
 // 🔥 MODIFICADO: cita personal
-func (s *appointmentService) CreatePersonalAppointment(ownerID int64, a Appointment) (*Appointment, error) {
+func (s *appointmentService) CreatePersonalAppointment(ownerID string, a Appointment) (*Appointment, error) {
 	if a.Start.After(a.End) {
 		return nil, ErrInvalidInput
 	}
@@ -436,13 +436,13 @@ func (s *appointmentService) CreatePersonalAppointment(ownerID int64, a Appointm
 	}
 	// notificación con detalles enriquecidos
 	var ownerUsername, ownerDisplayName string
-	if userRepo, ok := s.apps.(interface{ GetUserByID(int64) (*User, error) }); ok {
+	if userRepo, ok := s.apps.(interface{ GetUserByID(string) (*User, error) }); ok {
 		if owner, err := userRepo.GetUserByID(ownerID); err == nil && owner != nil {
 			ownerUsername = owner.Username
 			ownerDisplayName = owner.DisplayName
 		}
 	}
-	payload := fmt.Sprintf(`{"appointment_id":%d,"title":"%s","description":"%s","start":"%s","end":"%s","created_by_id":%d,"created_by_username":"%s","created_by_display_name":"%s","privacy":"%s"}`,
+	payload := fmt.Sprintf(`{"appointment_id":%q,"title":%q,"description":%q,"start":%q,"end":%q,"created_by_id":%q,"created_by_username":%q,"created_by_display_name":%q,"privacy":%q}`,
 		a.ID, a.Title, a.Description, a.Start.Format(time.RFC3339), a.End.Format(time.RFC3339),
 		ownerID, ownerUsername, ownerDisplayName, a.Privacy)
 	if err := s.notes.AddNotification(&Notification{
@@ -467,7 +467,7 @@ func (s *appointmentService) CreatePersonalAppointment(ownerID int64, a Appointm
 }
 
 // 🔥 MODIFICADO: cita grupal
-func (s *appointmentService) CreateGroupAppointment(ownerID int64, a Appointment) (*Appointment, []Participant, error) {
+func (s *appointmentService) CreateGroupAppointment(ownerID string, a Appointment) (*Appointment, []Participant, error) {
 	if a.GroupID == nil {
 		return nil, nil, ErrInvalidInput
 	}
@@ -538,17 +538,17 @@ func (s *appointmentService) CreateGroupAppointment(ownerID int64, a Appointment
 }
 
 // GetAppointmentByID retrieves a specific appointment by ID
-func (s *appointmentService) GetAppointmentByID(appointmentID int64) (*Appointment, error) {
+func (s *appointmentService) GetAppointmentByID(appointmentID string) (*Appointment, error) {
 	return s.apps.GetAppointmentByID(appointmentID)
 }
 
 // GetAppointmentParticipants retrieves all participants for an appointment with user details
-func (s *appointmentService) GetAppointmentParticipants(appointmentID int64) ([]ParticipantDetails, error) {
+func (s *appointmentService) GetAppointmentParticipants(appointmentID string) ([]ParticipantDetails, error) {
 	return s.apps.GetAppointmentParticipants(appointmentID)
 }
 
 // UpdateAppointment updates an existing appointment
-func (s *appointmentService) UpdateAppointment(ownerID int64, a Appointment) (*Appointment, error) {
+func (s *appointmentService) UpdateAppointment(ownerID string, a Appointment) (*Appointment, error) {
 	// First, get the existing appointment to verify ownership
 	existing, err := s.apps.GetAppointmentByID(a.ID)
 	if err != nil {
@@ -593,7 +593,7 @@ func (s *appointmentService) UpdateAppointment(ownerID int64, a Appointment) (*A
 		Entity:   "appointment",
 		EntityID: a.ID,
 		Action:   "update",
-		Payload:  fmt.Sprintf(`{"appointment_id": %d}`, a.ID),
+		Payload:  fmt.Sprintf(`{"appointment_id": %q}`, a.ID),
 		Version:  a.Version,
 	}
 	_ = s.events.Publish(evt)
@@ -602,7 +602,7 @@ func (s *appointmentService) UpdateAppointment(ownerID int64, a Appointment) (*A
 }
 
 // DeleteAppointment deletes an appointment
-func (s *appointmentService) DeleteAppointment(ownerID int64, appointmentID int64) error {
+func (s *appointmentService) DeleteAppointment(ownerID string, appointmentID string) error {
 	// First, get the existing appointment to verify ownership
 	existing, err := s.apps.GetAppointmentByID(appointmentID)
 	if err != nil {
@@ -632,7 +632,7 @@ func (s *appointmentService) DeleteAppointment(ownerID int64, appointmentID int6
 		Entity:   "appointment",
 		EntityID: appointmentID,
 		Action:   "delete",
-		Payload:  fmt.Sprintf(`{"appointment_id": %d}`, appointmentID),
+		Payload:  fmt.Sprintf(`{"appointment_id": %q}`, appointmentID),
 		Version:  existing.Version + 1,
 	}
 	_ = s.events.Publish(evt)
@@ -650,12 +650,12 @@ func NewAgendaService(apps AppointmentRepository, groups GroupRepository) Agenda
 	return &agendaService{apps: apps, groups: groups}
 }
 
-func (s *agendaService) GetUserAgendaForViewer(viewerID int64, start, end time.Time) ([]Appointment, error) {
+func (s *agendaService) GetUserAgendaForViewer(viewerID string, start, end time.Time) ([]Appointment, error) {
 	// For own agenda, no filtering usually required (owner sees full)
 	return s.apps.GetUserAgenda(viewerID, start, end)
 }
 
-func (s *agendaService) GetGroupAgendaForViewer(viewerID, groupID int64, start, end time.Time) ([]Appointment, error) {
+func (s *agendaService) GetGroupAgendaForViewer(viewerID, groupID string, start, end time.Time) ([]Appointment, error) {
 	appointments, err := s.apps.GetGroupAgenda(groupID, start, end)
 	if err != nil {
 		return nil, err
@@ -689,11 +689,11 @@ func NewNotificationService(notes NotificationRepository) NotificationService {
 	return &notificationService{notes: notes}
 }
 
-func (s *notificationService) List(userID int64) ([]Notification, error) {
+func (s *notificationService) List(userID string) ([]Notification, error) {
 	return s.notes.GetUserNotifications(userID)
 }
 
-func (s *notificationService) Notify(userID int64, typ string, payload string) error {
+func (s *notificationService) Notify(userID string, typ string, payload string) error {
 	n := &Notification{
 		UserID:    userID,
 		Type:      typ,
@@ -704,11 +704,11 @@ func (s *notificationService) Notify(userID int64, typ string, payload string) e
 }
 
 // 🔥 nuevo: unread y mark-read
-func (s *notificationService) ListUnread(userID int64) ([]Notification, error) {
+func (s *notificationService) ListUnread(userID string) ([]Notification, error) {
 	return s.notes.GetUnreadNotifications(userID)
 }
 
-func (s *notificationService) MarkRead(notificationID int64) error {
+func (s *notificationService) MarkRead(notificationID string) error {
 	return s.notes.MarkNotificationRead(notificationID)
 }
 
@@ -726,6 +726,6 @@ type noopReplication struct{}
 func NewNoopReplication() ReplicationService { return noopReplication{} }
 
 func (noopReplication) EmitAppointmentCreated(a Appointment) error {
-	fmt.Printf("emit appointment created id=%d\n", a.ID)
+	fmt.Printf("emit appointment created id=%s\n", a.ID)
 	return nil
 }

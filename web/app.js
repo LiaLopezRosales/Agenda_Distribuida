@@ -1048,7 +1048,7 @@
         start: startDate.toISOString(),
         end: endDate.toISOString(),
         privacy: $('eventPrivacy').value,
-        group_id: $('eventGroup').value ? Number($('eventGroup').value) : undefined
+        group_id: $('eventGroup').value ? $('eventGroup').value : undefined
       };
       // Log form data antes de enviar
       console.log('[saveEvent] Form data to send:', formData);
@@ -1197,7 +1197,7 @@
     
     // Update group counts
     state.groups.forEach(group => {
-      const groupCount = state.events.filter(e => e.group_id === group.id).length;
+      const groupCount = state.events.filter(e => String(e.group_id) === String(group.id)).length;
       const countEl = $(`groupCount${group.id}`);
       if (countEl) countEl.textContent = groupCount;
     });
@@ -1296,7 +1296,7 @@
           
           // For non-hierarchical groups, rank is automatically set to 0
           // For hierarchical groups, validate the rank
-          if (state.currentGroup && state.currentGroup.group_type === 'hierarchical') {
+          if (state.user && state.currentGroup && String(state.currentGroup.creator_id) === String(state.user.id) && state.currentGroup.group_type === 'hierarchical') {
             if (Number.isNaN(rank) || rank < 0) { alert('Rank must be a positive number'); return; }
           }
 
@@ -1393,7 +1393,7 @@
       const editBtn = $('editEventBtn');
       const deleteBtn = $('deleteEventBtn');
       
-      if (appointment.owner_id === state.user.id) {
+      if (String(appointment.owner_id) === String(state.user.id)) {
         editBtn.style.display = 'inline-block';
         deleteBtn.style.display = 'inline-block';
       } else {

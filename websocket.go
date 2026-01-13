@@ -40,12 +40,12 @@ type WSClient struct {
 	manager *WSManager
 	conn    *websocket.Conn
 	send    chan []byte
-	userID  int64
+	userID  string
 }
 
 // WSManager mantiene conexiones activas agrupadas por usuario
 type WSManager struct {
-	conns      map[int64]map[*WSClient]bool
+	conns      map[string]map[*WSClient]bool
 	mux        sync.RWMutex
 	register   chan *WSClient
 	unregister chan *WSClient
@@ -54,7 +54,7 @@ type WSManager struct {
 
 func NewWSManager() *WSManager {
 	return &WSManager{
-		conns:      make(map[int64]map[*WSClient]bool),
+		conns:      make(map[string]map[*WSClient]bool),
 		register:   make(chan *WSClient),
 		unregister: make(chan *WSClient),
 		closed:     make(chan struct{}),
@@ -71,7 +71,7 @@ func (m *WSManager) Run() {
 			}
 			m.conns[c.userID][c] = true
 			m.mux.Unlock()
-			log.Printf("ws: user %d connected", c.userID)
+			log.Printf("ws: user %s connected", c.userID)
 		case c := <-m.unregister:
 			m.mux.Lock()
 			if set, ok := m.conns[c.userID]; ok {
@@ -84,7 +84,7 @@ func (m *WSManager) Run() {
 				}
 			}
 			m.mux.Unlock()
-			log.Printf("ws: user %d disconnected", c.userID)
+			log.Printf("ws: user %s disconnected", c.userID)
 		case <-m.closed:
 			m.mux.Lock()
 			for _, set := range m.conns {
@@ -93,7 +93,7 @@ func (m *WSManager) Run() {
 					close(cl.send)
 				}
 			}
-			m.conns = make(map[int64]map[*WSClient]bool)
+			m.conns = make(map[string]map[*WSClient]bool)
 			m.mux.Unlock()
 			return
 		}
@@ -106,7 +106,7 @@ func (m *WSManager) Stop() { close(m.closed) }
 // Broadcast helpers
 // =====================
 
-func (m *WSManager) BroadcastToUser(userID int64, msg interface{}) {
+func (m *WSManager) BroadcastToUser(userID string, msg interface{}) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("ws: marshal error: %v", err)
@@ -131,7 +131,7 @@ func (m *WSManager) BroadcastToUser(userID int64, msg interface{}) {
 	}
 }
 
-func (m *WSManager) BroadcastToUsers(userIDs []int64, msg interface{}) {
+func (m *WSManager) BroadcastToUsers(userIDs []string, msg interface{}) {
 	for _, uid := range userIDs {
 		m.BroadcastToUser(uid, msg)
 	}

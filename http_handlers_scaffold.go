@@ -2,11 +2,13 @@
 package agendadistribuida
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/mail"
 	"os"
@@ -45,6 +47,14 @@ type responseRecorder struct {
 func (rr *responseRecorder) WriteHeader(status int) {
 	rr.status = status
 	rr.ResponseWriter.WriteHeader(status)
+}
+
+func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rr.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijack not supported by underlying ResponseWriter")
+	}
+	return h.Hijack()
 }
 
 func (a *API) requestIDMiddleware() mux.MiddlewareFunc {
@@ -551,7 +561,7 @@ func (a *API) handleCreateAppointment() http.HandlerFunc {
 		Start       string  `json:"start"`
 		End         string  `json:"end"`
 		Privacy     Privacy `json:"privacy"`
-		GroupID     *int64  `json:"group_id,omitempty"`
+		GroupID     *string `json:"group_id,omitempty"`
 	}
 	toRFC3339 := func(v string, end bool) (time.Time, error) {
 		v = strings.TrimSpace(v)
@@ -763,7 +773,7 @@ func (a *API) handleGetAppointmentDetails() http.HandlerFunc {
 		userID, _ := GetUserIDFromContext(r.Context())
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			http.Error(w, "Invalid appointment ID", http.StatusBadRequest)
 			return
 		}
@@ -818,7 +828,8 @@ func (a *API) handleGetAppointmentDetails() http.HandlerFunc {
 		}
 
 		// Apply privacy filter
-		filteredAppointment := a.filterAppointmentForViewer(*appointment, userID, appointment.GroupID)
+		user, _ := a.users.GetUserByID(userID)
+		filteredAppointment := a.filterAppointmentForViewer(*appointment, user, appointment.GroupID)
 
 		response := map[string]interface{}{
 			"appointment":  filteredAppointment,
@@ -883,15 +894,15 @@ func (a *API) handleListAuditLogs() http.HandlerFunc {
 }
 
 // filterAppointmentForViewer applies privacy filtering based on viewer, owner, and hierarchy
-func (a *API) filterAppointmentForViewer(appointment Appointment, viewerID int64, groupID *int64) Appointment {
+func (a *API) filterAppointmentForViewer(appointment Appointment, viewer *User, groupID *string) Appointment {
 	// Owner always sees everything
-	if appointment.OwnerID == viewerID {
+	if appointment.OwnerID == viewer.ID {
 		return appointment
 	}
 
 	// If it's a group appointment, check hierarchy
 	if groupID != nil && appointment.GroupID != nil {
-		superior, _ := a.groupsRepo.IsSuperior(*appointment.GroupID, viewerID, appointment.OwnerID)
+		superior, _ := a.groupsRepo.IsSuperior(*appointment.GroupID, viewer.ID, appointment.OwnerID)
 		if superior {
 			return appointment // superiors see details
 		}
@@ -913,7 +924,7 @@ func (a *API) handleUpdateAppointment() http.HandlerFunc {
 		Start       time.Time `json:"start"`
 		End         time.Time `json:"end"`
 		Privacy     Privacy   `json:"privacy"`
-		GroupID     *int64    `json:"group_id,omitempty"`
+		GroupID     *string   `json:"group_id,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -926,7 +937,7 @@ func (a *API) handleUpdateAppointment() http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			a.log(ctx, slog.LevelWarn, "appointment_update_invalid_id")
 			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
 			return
@@ -979,7 +990,7 @@ func (a *API) handleDeleteAppointment() http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			a.log(ctx, slog.LevelWarn, "appointment_delete_invalid_id")
 			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
 			return
@@ -1019,7 +1030,7 @@ func (a *API) handleUpdateGroup() http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		groupID := parseID(vars["groupID"])
-		if groupID == 0 {
+		if groupID == "" {
 			a.log(ctx, slog.LevelWarn, "group_update_invalid_group")
 			http.Error(w, "invalid group ID", http.StatusBadRequest)
 			return
@@ -1111,7 +1122,7 @@ func (a *API) handleDeleteGroup() http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		groupID := parseID(vars["groupID"])
-		if groupID == 0 {
+		if groupID == "" {
 			a.log(ctx, slog.LevelWarn, "group_delete_invalid_group")
 			http.Error(w, "invalid group ID", http.StatusBadRequest)
 			return
@@ -1151,7 +1162,7 @@ func (a *API) handleUpdateMember() http.HandlerFunc {
 		vars := mux.Vars(r)
 		groupID := parseID(vars["groupID"])
 		memberUserID := parseID(vars["userID"])
-		if groupID == 0 || memberUserID == 0 {
+		if groupID == "" || memberUserID == "" {
 			a.log(ctx, slog.LevelWarn, "group_member_update_invalid_ids", "group_id", groupID, "member_id", memberUserID)
 			http.Error(w, "invalid group or user ID", http.StatusBadRequest)
 			return
@@ -1241,7 +1252,7 @@ func (a *API) handleRemoveMember() http.HandlerFunc {
 		vars := mux.Vars(r)
 		groupID := parseID(vars["groupID"])
 		memberUserID := parseID(vars["userID"])
-		if groupID == 0 || memberUserID == 0 {
+		if groupID == "" || memberUserID == "" {
 			a.log(ctx, slog.LevelWarn, "group_member_remove_invalid_ids", "group_id", groupID, "member_id", memberUserID)
 			http.Error(w, "invalid group or user ID", http.StatusBadRequest)
 			return
@@ -1315,7 +1326,7 @@ func (a *API) handleAcceptInvitation() http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			a.log(ctx, slog.LevelWarn, "invitation_accept_invalid_id")
 			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
 			return
@@ -1382,7 +1393,7 @@ func (a *API) handleRejectInvitation() http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			a.log(ctx, slog.LevelWarn, "invitation_reject_invalid_id")
 			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
 			return
@@ -1447,7 +1458,7 @@ func (a *API) handleGetMyParticipationStatus() http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			http.Error(w, "invalid appointment ID", http.StatusBadRequest)
 			return
 		}

@@ -29,10 +29,10 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 	perPeer := make(map[string]*peerState)
 
 	type notifPayload struct {
-		UserID  int64  `json:"user_id"`
+		UserID   string `json:"user_id"`
 		Username string `json:"username"` // For ID mapping during reconciliation
-		Type    string `json:"type"`
-		Payload string `json:"payload"`   // This is the actual notification payload
+		Type     string `json:"type"`
+		Payload  string `json:"payload"` // This is the actual notification payload
 	}
 
 	go func() {
@@ -79,13 +79,13 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 					continue
 				}
 				defer resp.Body.Close()
-				
+
 				// Verify HTTP status code before decoding
 				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 					Logger().Debug("notification_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
 					continue
 				}
-				
+
 				// Update LastSeen for successfully contacted peer
 				if store != nil && id != "" && id != cons.NodeID() {
 					_ = store.UpsertClusterNode(&ClusterNode{
@@ -95,7 +95,7 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 						LastSeen: time.Now(),
 					})
 				}
-				
+
 				var events []Event
 				if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
 					Logger().Warn("notification_reconcile_decode_failed", "peer", id, "err", err)
@@ -118,10 +118,10 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 					if p.Type == "" || p.Payload == "" {
 						continue
 					}
-					
+
 					// CRITICAL: Map remote user ID to local user ID using username
 					// During partitions, the same user may have different IDs in different partitions.
-					var localUserID int64
+					var localUserID string
 					if p.Username != "" {
 						if localUser, err := store.GetUserByUsername(p.Username); err == nil && localUser != nil {
 							localUserID = localUser.ID
@@ -130,8 +130,7 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 							Logger().Debug("notification_reconcile_user_not_found", "peer", id, "username", p.Username)
 							continue
 						}
-					} else if p.UserID != 0 {
-						// Fallback: try to use remote ID if username not available (backward compatibility)
+					} else if p.UserID != "" {
 						localUserID = p.UserID
 						Logger().Warn("notification_reconcile_no_username", "peer", id, "using_remote_id", p.UserID)
 					} else {
@@ -139,12 +138,12 @@ func StartNotificationReconciler(store *Storage, cons Consensus, peers PeerStore
 						Logger().Debug("notification_reconcile_no_user_info", "peer", id)
 						continue
 					}
-					
+
 					// If notification already exists locally, skip
-					if existingID, err := store.FindNotificationBySignature(localUserID, p.Type, p.Payload); err == nil && existingID != 0 {
+					if existingID, err := store.FindNotificationBySignature(localUserID, p.Type, p.Payload); err == nil && existingID != "" {
 						continue
 					}
-					
+
 					entry, err := BuildEntryRepairEnsureNotification(localUserID, p.Type, p.Payload)
 					if err != nil {
 						Logger().Warn("notification_reconcile_build_entry_failed", "peer", id, "username", p.Username, "type", p.Type, "err", err)
