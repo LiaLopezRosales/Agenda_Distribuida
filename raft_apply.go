@@ -193,6 +193,14 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
+			// Safeguard: do not create users with empty password hash from repairs
+			if p.PasswordHash == "" {
+				if u, err := store.GetUserByUsername(p.Username); err != nil || u == nil {
+					// User does not exist, and we have no password. Do not create it.
+					// Return a non-fatal error to avoid poisoning the log.
+					return errors.New("apply conflict: repair.user.ensure skipped for new user with empty password hash")
+				}
+			}
 			u := &User{
 				ID:           p.ID,
 				Username:     p.Username,
@@ -353,6 +361,12 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
 				return err
 			}
+			// Idempotency: check if group already exists by its deterministic signature.
+			gid := GroupIDFromSignature(p.GroupType, p.CreatorUser, p.Name)
+			if existing, err := store.GetGroupByID(gid); err == nil && existing != nil {
+				// Group exists, this is a no-op. Return nil to mark as applied.
+				return nil
+			}
 			g := &Group{
 				Name:            p.Name,
 				Description:     p.Description,
@@ -361,6 +375,10 @@ func NewRaftApplier(store *Storage) func(LogEntry) error {
 				GroupType:       p.GroupType,
 			}
 			if err := store.CreateGroup(g); err != nil {
+				// If we lost a race, and it now exists, treat as success.
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					return nil
+				}
 				return err
 			}
 			// Owner rank depends on group type: hierarchical -> higher rank, non_hierarchical -> 0
