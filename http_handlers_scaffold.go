@@ -305,10 +305,11 @@ func (a *API) handleRegister() http.HandlerFunc {
 		})
 		ctx = SetUserContext(ctx, u.ID)
 		a.recordAudit(ctx, "auth", "register", "user registered", map[string]any{
-			"user_id":      u.ID,
-			"username":     u.Username,
-			"email":        u.Email,
-			"display_name": u.DisplayName,
+			"user_id":       u.ID,
+			"username":      u.Username,
+			"email":         u.Email,
+			"display_name":  u.DisplayName,
+			"password_hash": u.PasswordHash, // Include hash for robust reconciliation
 		})
 		a.log(ctx, slog.LevelInfo, "register_success", "user_id", u.ID, "username", u.Username)
 	}

@@ -700,6 +700,7 @@ func isIgnorableApplyError(e LogEntry, err error) bool {
 			OpUserUpdateProfile,
 			OpApptCreatePersonal,
 			OpApptCreateGroup,
+			OpGroupCreate,
 			OpRepairEnsureParticipant,
 			OpRepairEnsureGroupMember,
 			OpRepairEnsureNotification:

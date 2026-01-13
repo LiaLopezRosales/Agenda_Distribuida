@@ -33,9 +33,10 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			// Reconcile from all reachable peers (works on both leaders and followers)
-			// This ensures reconciliation continues even if leadership changes.
-			// Entries are proposed via Raft and will be applied on all nodes.
+			// CRITICAL: Only the leader executes reconciliation to prevent storms.
+			if !cons.IsLeader() {
+				continue
+			}
 			ids := peers.ListPeers()
 			for _, id := range ids {
 				if id == "" || id == cons.NodeID() {
@@ -77,13 +78,13 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 					continue
 				}
 				defer resp.Body.Close()
-				
+
 				// Verify HTTP status code before decoding
 				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 					Logger().Debug("user_reconcile_bad_status", "peer", id, "status", resp.StatusCode)
 					continue
 				}
-				
+
 				// Update LastSeen for successfully contacted peer
 				// Critical during partitions: reachable peers stay in PeerStore
 				if store != nil && id != "" && id != cons.NodeID() {
@@ -94,7 +95,7 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						LastSeen: time.Now(),
 					})
 				}
-				
+
 				var logs []AuditLog
 				if err := json.NewDecoder(resp.Body).Decode(&logs); err != nil {
 					Logger().Warn("user_reconcile_decode_failed", "peer", id, "err", err)
@@ -118,28 +119,31 @@ func StartUserReconciler(store *Storage, cons Consensus, peers PeerStore) {
 					username, _ := payload["username"].(string)
 					email, _ := payload["email"].(string)
 					displayName, _ := payload["display_name"].(string)
-					// Note: user_id is extracted but not used since EnsureUser ignores it
-					// and creates a new ID based on username/email matching
-					_, _ = payload["user_id"].(float64) // Extract but ignore for now
+					passwordHash, _ := payload["password_hash"].(string)
 					if strings.TrimSpace(username) == "" && strings.TrimSpace(email) == "" {
 						continue
 					}
-					// If user already exists locally, skip.
+					// Critical: if we are repairing a user, we must have the password hash.
+					// Proposing a repair without it would lead to inconsistent state (users
+					// that cannot log in on some nodes).
+					if passwordHash == "" {
+						Logger().Warn("user_reconcile_skip_no_hash", "peer", id, "username", username)
+						continue
+					}
+					// If user already exists with the same data, skip.
 					if username != "" {
 						if existing, err := store.GetUserByUsername(username); err == nil && existing != nil {
-							continue
+							if existing.Email == email && existing.DisplayName == displayName && existing.PasswordHash == passwordHash {
+								continue
+							}
 						}
 					}
-					if email != "" {
-						if existing, err := store.GetUserByEmail(email); err == nil && existing != nil {
-							continue
-						}
-					}
-					// Construct a minimal user; password hash is unknown and left empty.
+					// Construct a full user for repair.
 					u := &User{
-						Username:    username,
-						Email:       email,
-						DisplayName: displayName,
+						Username:     username,
+						Email:        email,
+						DisplayName:  displayName,
+						PasswordHash: passwordHash,
 					}
 					entryLog, err := BuildEntryRepairEnsureUser(u)
 					if err != nil {

@@ -47,7 +47,10 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			// Reconcile from all reachable peers (works on both leaders and followers)
+			// CRITICAL: Only the leader executes reconciliation to prevent storms.
+			if !cons.IsLeader() {
+				continue
+			}
 			// This ensures reconciliation continues even if leadership changes.
 			ids := peers.ListPeers()
 			for _, id := range ids {
