@@ -29,9 +29,9 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 	perPeer := make(map[string]*peerState)
 
 	type apptPayload struct {
-		OwnerID              int64     `json:"owner_id"`
+		OwnerID              string    `json:"owner_id"`
 		OwnerUsername        string    `json:"owner_username"` // For ID mapping during reconciliation
-		GroupID              *int64    `json:"group_id"`
+		GroupID              *string   `json:"group_id"`
 		GroupName            string    `json:"group_name"`             // For group ID mapping
 		GroupCreatorUsername string    `json:"group_creator_username"` // For group ID mapping
 		GroupType            GroupType `json:"group_type"`             // For group ID mapping
@@ -131,7 +131,7 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 					// CRITICAL: Map remote owner ID to local owner ID using username
 					// During partitions, the same user may have different IDs in different partitions.
 					// We use username/email as the stable identifier.
-					var localOwnerID int64
+					var localOwnerID string
 					if strings.TrimSpace(p.OwnerUsername) == "" {
 						// Without stable identifier we must skip to avoid assigning to wrong user.
 						Logger().Warn("appt_reconcile_missing_owner_username", "peer", id, "title", p.Title)
@@ -146,14 +146,14 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 
 					// CRITICAL: Map remote group ID to local group ID using group name and creator username
 					// During partitions, the same group may have different IDs in different partitions.
-					var localGroupIDPtr *int64
-					if p.GroupID != nil && *p.GroupID != 0 {
+					var localGroupIDPtr *string
+					if p.GroupID != nil && strings.TrimSpace(*p.GroupID) != "" {
 						if strings.TrimSpace(p.GroupName) == "" || strings.TrimSpace(p.GroupCreatorUsername) == "" || strings.TrimSpace(string(p.GroupType)) == "" {
 							Logger().Warn("appt_reconcile_missing_group_signature", "peer", id, "title", p.Title, "group_id", *p.GroupID)
 							continue
 						}
 						if localCreator, err := store.GetUserByUsername(p.GroupCreatorUsername); err == nil && localCreator != nil {
-							if localGroupID, err := store.FindGroupBySignature(p.GroupName, localCreator.ID, p.GroupType); err == nil && localGroupID != 0 {
+							if localGroupID, err := store.FindGroupBySignature(p.GroupName, localCreator.ID, p.GroupType); err == nil && strings.TrimSpace(localGroupID) != "" {
 								localGroupIDPtr = &localGroupID
 							} else {
 								Logger().Debug("appt_reconcile_group_not_found", "peer", id, "group_name", p.GroupName, "creator_username", p.GroupCreatorUsername)
@@ -166,7 +166,7 @@ func StartAppointmentReconciler(store *Storage, cons Consensus, peers PeerStore)
 					}
 
 					// If appointment already exists locally, skip
-					if existingID, err := store.FindAppointmentBySignature(localOwnerID, localGroupIDPtr, start, end, p.Title); err == nil && existingID != 0 {
+					if existingID, err := store.FindAppointmentBySignature(localOwnerID, localGroupIDPtr, start, end, p.Title); err == nil && strings.TrimSpace(existingID) != "" {
 						continue
 					}
 

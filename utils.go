@@ -4,10 +4,12 @@ package agendadistribuida
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,12 +19,12 @@ import (
 
 type ctxKeyUserID struct{}
 
-func SetUserContext(ctx context.Context, userID int64) context.Context {
+func SetUserContext(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, ctxKeyUserID{}, userID)
 }
 
-func GetUserIDFromContext(ctx context.Context) (int64, bool) {
-	uid, ok := ctx.Value(ctxKeyUserID{}).(int64)
+func GetUserIDFromContext(ctx context.Context) (string, bool) {
+	uid, ok := ctx.Value(ctxKeyUserID{}).(string)
 	return uid, ok
 }
 
@@ -30,13 +32,10 @@ func GetUserIDFromContext(ctx context.Context) (int64, bool) {
 // Parse helpers
 // -----------------------------
 
-// parseID convierte string a int64 con fallback 0
-func parseID(s string) int64 {
-	id, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return id
+// parseID normaliza IDs (UUID/strings) provenientes de path.
+// Para B1, los IDs son strings deterministas; si viene vacío, retorna "".
+func parseID(s string) string {
+	return strings.TrimSpace(s)
 }
 
 // parseTimeRange lee ?start= y ?end= en formato RFC3339
@@ -76,4 +75,32 @@ func verifyHMACSHA256Hex(body []byte, secret, hexSig string) bool {
 	expect := computeHMACSHA256Hex(body, secret)
 	// constant time compare
 	return hmac.Equal([]byte(expect), []byte(hexSig))
+}
+
+// -----------------------------
+// Deterministic IDs (B1)
+// -----------------------------
+
+// stableID returns a deterministic UUIDv5-like identifier encoded as 32 lowercase hex chars.
+// We don't strictly enforce RFC4122 formatting because we only require:
+// - deterministic mapping from stable keys
+// - low collision probability for project usage
+func stableID(kind, key string) string {
+	base := strings.ToLower(strings.TrimSpace(key))
+	h := sha1.Sum([]byte(kind + ":" + base))
+	// Use the first 16 bytes (128 bits) of SHA1 as the ID.
+	return hex.EncodeToString(h[:16])
+}
+
+func UserIDFromUsername(username string) string {
+	return stableID("user", username)
+}
+
+func GroupIDFromSignature(groupType GroupType, creatorUsername, groupName string) string {
+	return stableID("group", fmt.Sprintf("%s:%s:%s", groupType, creatorUsername, groupName))
+}
+
+func AppointmentIDFromSignature(ownerUsername string, groupSignature string, start, end time.Time, title string) string {
+	// groupSignature should be "" for personal appointments.
+	return stableID("appointment", fmt.Sprintf("%s:%s:%s:%s:%s", ownerUsername, groupSignature, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), title))
 }

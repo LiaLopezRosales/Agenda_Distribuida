@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func BuildEntryApptCreatePersonal(ownerID int64, a Appointment) (LogEntry, error) {
+func BuildEntryApptCreatePersonal(ownerID string, a Appointment) (LogEntry, error) {
 	p := apptCreatePayload{
 		Title:       a.Title,
 		Description: a.Description,
@@ -22,7 +22,7 @@ func BuildEntryApptCreatePersonal(ownerID int64, a Appointment) (LogEntry, error
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "appointment",
-		AggregateID: strconv.FormatInt(ownerID, 10),
+		AggregateID: ownerID,
 		Op:          OpApptCreatePersonal,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
@@ -44,15 +44,15 @@ func BuildEntryRepairEnsureUser(u *User) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "repair_user",
-		AggregateID: strconv.FormatInt(u.ID, 10),
+		AggregateID: u.ID,
 		Op:          OpRepairEnsureUser,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryApptCreateGroup(ownerID int64, a Appointment) (LogEntry, error) {
-	var groupID int64
+func BuildEntryApptCreateGroup(ownerID string, a Appointment) (LogEntry, error) {
+	var groupID string
 	if a.GroupID != nil {
 		groupID = *a.GroupID
 	}
@@ -72,7 +72,7 @@ func BuildEntryApptCreateGroup(ownerID int64, a Appointment) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "appointment_group",
-		AggregateID: strconv.FormatInt(ownerID, 10),
+		AggregateID: ownerID,
 		Op:          OpApptCreateGroup,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
@@ -95,14 +95,14 @@ func BuildEntryApptUpdate(a Appointment) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "appointment",
-		AggregateID: strconv.FormatInt(a.ID, 10),
+		AggregateID: a.ID,
 		Op:          OpApptUpdate,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryApptDelete(appointmentID int64) (LogEntry, error) {
+func BuildEntryApptDelete(appointmentID string) (LogEntry, error) {
 	p := apptDeletePayload{AppointmentID: appointmentID}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -111,7 +111,7 @@ func BuildEntryApptDelete(appointmentID int64) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "appointment",
-		AggregateID: strconv.FormatInt(appointmentID, 10),
+		AggregateID: appointmentID,
 		Op:          OpApptDelete,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
@@ -132,7 +132,7 @@ func BuildEntryUserCreate(u *User) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "user",
-		AggregateID: strconv.FormatInt(u.ID, 10),
+		AggregateID: u.ID,
 		Op:          OpUserCreate,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
@@ -153,14 +153,14 @@ func BuildEntryUserUpdateProfile(u *User) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "user",
-		AggregateID: strconv.FormatInt(u.ID, 10),
+		AggregateID: u.ID,
 		Op:          OpUserUpdateProfile,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryUserUpdatePassword(userID int64, passwordHash string) (LogEntry, error) {
+func BuildEntryUserUpdatePassword(userID string, passwordHash string) (LogEntry, error) {
 	p := userUpdatePasswordPayload{UserID: userID, PasswordHash: passwordHash}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -169,7 +169,7 @@ func BuildEntryUserUpdatePassword(userID int64, passwordHash string) (LogEntry, 
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "user",
-		AggregateID: strconv.FormatInt(userID, 10),
+		AggregateID: userID,
 		Op:          OpUserUpdatePassword,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
@@ -191,14 +191,14 @@ func BuildEntryGroupCreate(g *Group) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "group",
-		AggregateID: strconv.FormatInt(g.ID, 10),
+		AggregateID: g.ID,
 		Op:          OpGroupCreate,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryGroupUpdate(groupID int64, name, description *string) (LogEntry, error) {
+func BuildEntryGroupUpdate(groupID string, name, description *string) (LogEntry, error) {
 	p := groupUpdatePayload{GroupID: groupID, Name: name, Description: description}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -207,14 +207,14 @@ func BuildEntryGroupUpdate(groupID int64, name, description *string) (LogEntry, 
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "group",
-		AggregateID: strconv.FormatInt(groupID, 10),
+		AggregateID: groupID,
 		Op:          OpGroupUpdate,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryGroupDelete(groupID int64) (LogEntry, error) {
+func BuildEntryGroupDelete(groupID string) (LogEntry, error) {
 	p := groupDeletePayload{GroupID: groupID}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -223,14 +223,14 @@ func BuildEntryGroupDelete(groupID int64) (LogEntry, error) {
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "group",
-		AggregateID: strconv.FormatInt(groupID, 10),
+		AggregateID: groupID,
 		Op:          OpGroupDelete,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryGroupMemberOp(op string, groupID, userID int64, rank int) (LogEntry, error) {
+func BuildEntryGroupMemberOp(op string, groupID, userID string, rank int) (LogEntry, error) {
 	p := groupMemberPayload{GroupID: groupID, UserID: userID, Rank: rank}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -239,14 +239,14 @@ func BuildEntryGroupMemberOp(op string, groupID, userID int64, rank int) (LogEnt
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "group_member",
-		AggregateID: strconv.FormatInt(groupID, 10),
+		AggregateID: groupID,
 		Op:          op,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryInvitationStatus(appointmentID, userID int64, status ApptStatus) (LogEntry, error) {
+func BuildEntryInvitationStatus(appointmentID, userID string, status ApptStatus) (LogEntry, error) {
 	op := OpInvitationAccept
 	if status == StatusDeclined {
 		op = OpInvitationReject
@@ -259,14 +259,14 @@ func BuildEntryInvitationStatus(appointmentID, userID int64, status ApptStatus) 
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "invitation",
-		AggregateID: strconv.FormatInt(appointmentID, 10),
+		AggregateID: appointmentID,
 		Op:          op,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryRepairUserClearEmailIfMatches(userID int64, email string) (LogEntry, error) {
+func BuildEntryRepairUserClearEmailIfMatches(userID string, email string) (LogEntry, error) {
 	p := repairUserClearEmailPayload{UserID: userID, Email: email}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -275,14 +275,14 @@ func BuildEntryRepairUserClearEmailIfMatches(userID int64, email string) (LogEnt
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "repair_user",
-		AggregateID: strconv.FormatInt(userID, 10),
+		AggregateID: userID,
 		Op:          OpRepairUserClearEmailIfMatches,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryRepairEnsureGroupMember(groupID, userID int64, rank int) (LogEntry, error) {
+func BuildEntryRepairEnsureGroupMember(groupID, userID string, rank int) (LogEntry, error) {
 	p := repairEnsureGroupMemberPayload{GroupID: groupID, UserID: userID, Rank: rank}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -291,14 +291,14 @@ func BuildEntryRepairEnsureGroupMember(groupID, userID int64, rank int) (LogEntr
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "repair_group",
-		AggregateID: strconv.FormatInt(groupID, 10),
+		AggregateID: groupID,
 		Op:          OpRepairEnsureGroupMember,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryRepairEnsureParticipant(appointmentID, userID int64, status ApptStatus, isOptional bool) (LogEntry, error) {
+func BuildEntryRepairEnsureParticipant(appointmentID, userID string, status ApptStatus, isOptional bool) (LogEntry, error) {
 	p := repairEnsureParticipantPayload{AppointmentID: appointmentID, UserID: userID, Status: status, IsOptional: isOptional}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -307,14 +307,14 @@ func BuildEntryRepairEnsureParticipant(appointmentID, userID int64, status ApptS
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "repair_appointment",
-		AggregateID: strconv.FormatInt(appointmentID, 10),
+		AggregateID: appointmentID,
 		Op:          OpRepairEnsureParticipant,
 		Payload:     string(b),
 		Timestamp:   time.Now(),
 	}, nil
 }
 
-func BuildEntryRepairEnsureNotification(userID int64, nType, payload string) (LogEntry, error) {
+func BuildEntryRepairEnsureNotification(userID string, nType, payload string) (LogEntry, error) {
 	p := repairEnsureNotificationPayload{UserID: userID, Type: nType, Payload: payload}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -323,7 +323,7 @@ func BuildEntryRepairEnsureNotification(userID int64, nType, payload string) (Lo
 	return LogEntry{
 		EventID:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		Aggregate:   "repair_notification",
-		AggregateID: strconv.FormatInt(userID, 10),
+		AggregateID: userID,
 		Op:          OpRepairEnsureNotification,
 		Payload:     string(b),
 		Timestamp:   time.Now(),

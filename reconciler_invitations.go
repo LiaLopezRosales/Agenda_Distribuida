@@ -29,12 +29,12 @@ func StartInvitationReconciler(store *Storage, cons Consensus, peers PeerStore) 
 	perPeer := make(map[string]*peerState)
 
 	type invitationPayload struct {
-		AppointmentID            int64      `json:"appointment_id"`
-		UserID                   int64      `json:"user_id"`
+		AppointmentID            string     `json:"appointment_id"`
+		UserID                   string     `json:"user_id"`
 		Username                 string     `json:"username"` // For user ID mapping
 		Status                   ApptStatus `json:"status"`
 		ApptOwnerUsername        string     `json:"appt_owner_username"`         // For appointment ID mapping
-		ApptGroupID              *int64     `json:"appt_group_id"`               // For appointment ID mapping
+		ApptGroupID              *string    `json:"appt_group_id"`               // For appointment ID mapping
 		ApptGroupName            string     `json:"appt_group_name"`             // For appointment ID mapping
 		ApptGroupCreatorUsername string     `json:"appt_group_creator_username"` // For appointment ID mapping
 		ApptGroupType            GroupType  `json:"appt_group_type"`             // For appointment ID mapping
@@ -124,7 +124,7 @@ func StartInvitationReconciler(store *Storage, cons Consensus, peers PeerStore) 
 					}
 					// CRITICAL: Map remote user ID to local user ID using username
 					// During partitions, the same user may have different IDs in different partitions.
-					var localUserID int64
+					var localUserID string
 					if strings.TrimSpace(p.Username) == "" {
 						Logger().Warn("invitation_reconcile_missing_username", "peer", id, "appointment_id", p.AppointmentID)
 						continue
@@ -138,7 +138,7 @@ func StartInvitationReconciler(store *Storage, cons Consensus, peers PeerStore) 
 
 					// CRITICAL: Map remote appointment ID to local appointment ID using signature
 					// During partitions, the same appointment may have different IDs in different partitions.
-					var localAppointmentID int64
+					var localAppointmentID string
 					if p.ApptTitle != "" && p.ApptStart != "" && p.ApptEnd != "" {
 						// Parse appointment times
 						apptStart, err1 := time.Parse(time.RFC3339, p.ApptStart)
@@ -149,7 +149,7 @@ func StartInvitationReconciler(store *Storage, cons Consensus, peers PeerStore) 
 						}
 
 						// Map owner username to local owner ID
-						var localOwnerID int64
+						var localOwnerID string
 						if strings.TrimSpace(p.ApptOwnerUsername) == "" {
 							Logger().Debug("invitation_reconcile_no_appt_owner_username", "peer", id)
 							continue
@@ -162,14 +162,14 @@ func StartInvitationReconciler(store *Storage, cons Consensus, peers PeerStore) 
 						}
 
 						// Map group ID if it's a group appointment
-						var localGroupIDPtr *int64
-						if p.ApptGroupID != nil && *p.ApptGroupID != 0 {
+						var localGroupIDPtr *string
+						if p.ApptGroupID != nil && *p.ApptGroupID != "" {
 							if strings.TrimSpace(p.ApptGroupName) == "" || strings.TrimSpace(p.ApptGroupCreatorUsername) == "" || strings.TrimSpace(string(p.ApptGroupType)) == "" {
 								Logger().Debug("invitation_reconcile_missing_appt_group_signature", "peer", id, "group_id", *p.ApptGroupID)
 								continue
 							}
 							if localGroupCreator, err := store.GetUserByUsername(p.ApptGroupCreatorUsername); err == nil && localGroupCreator != nil {
-								if localGroupID, err := store.FindGroupBySignature(p.ApptGroupName, localGroupCreator.ID, p.ApptGroupType); err == nil && localGroupID != 0 {
+								if localGroupID, err := store.FindGroupBySignature(p.ApptGroupName, localGroupCreator.ID, p.ApptGroupType); err == nil && localGroupID != "" {
 									localGroupIDPtr = &localGroupID
 								} else {
 									Logger().Debug("invitation_reconcile_appt_group_not_found", "peer", id, "group_name", p.ApptGroupName)
@@ -182,7 +182,7 @@ func StartInvitationReconciler(store *Storage, cons Consensus, peers PeerStore) 
 						}
 
 						// Find appointment by signature
-						if foundID, err := store.FindAppointmentBySignature(localOwnerID, localGroupIDPtr, apptStart, apptEnd, p.ApptTitle); err == nil && foundID != 0 {
+						if foundID, err := store.FindAppointmentBySignature(localOwnerID, localGroupIDPtr, apptStart, apptEnd, p.ApptTitle); err == nil && foundID != "" {
 							localAppointmentID = foundID
 						} else {
 							// Appointment not found locally, skip this invitation (will be retried when appointment is reconciled)

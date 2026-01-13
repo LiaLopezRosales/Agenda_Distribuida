@@ -239,7 +239,7 @@ type createAppointmentRequest struct {
 	Start       time.Time `json:"start"`
 	End         time.Time `json:"end"`
 	Privacy     Privacy   `json:"privacy"`
-	GroupID     *int64    `json:"group_id,omitempty"`
+	GroupID     *string   `json:"group_id,omitempty"`
 }
 
 func handleCreateAppointment(storage *Storage, wsManager *WSManager) http.HandlerFunc {
@@ -277,7 +277,7 @@ func handleCreateAppointment(storage *Storage, wsManager *WSManager) http.Handle
 
 			// Crear notificaciones para todos los participantes
 			for _, p := range participants {
-				payload := fmt.Sprintf(`{"appointment_id": %d, "status": "%s"}`, appt.ID, p.Status)
+				payload := fmt.Sprintf(`{"appointment_id": "%s", "status": "%s"}`, appt.ID, p.Status)
 				storage.AddNotification(&Notification{
 					UserID:    p.UserID,
 					Type:      "invite",
@@ -327,7 +327,7 @@ func handleCreateAppointment(storage *Storage, wsManager *WSManager) http.Handle
 		storage.AddNotification(&Notification{
 			UserID:    user.ID,
 			Type:      "created",
-			Payload:   fmt.Sprintf(`{"appointment_id": %d}`, appt.ID),
+			Payload:   fmt.Sprintf(`{"appointment_id": "%s"}`, appt.ID),
 			CreatedAt: time.Now(),
 		})
 		// 🔔 Nuevo: enviar por WebSocket en tiempo real
@@ -345,7 +345,7 @@ func handleCreateAppointment(storage *Storage, wsManager *WSManager) http.Handle
 // ======================
 
 // Aplica reglas de privacidad según jerarquía y dueño
-func filterAppointmentForViewer(storage *Storage, a Appointment, viewer *User, groupID *int64) Appointment {
+func filterAppointmentForViewer(storage *Storage, a Appointment, viewer *User, groupID *string) Appointment {
 	// Dueño siempre ve todo
 	if a.OwnerID == viewer.ID {
 		return a
@@ -434,7 +434,7 @@ func handleGetAppointmentDetails(storage *Storage) http.HandlerFunc {
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			respondError(w, http.StatusBadRequest, "Invalid appointment ID")
 			return
 		}
@@ -514,7 +514,7 @@ func handleUpdateAppointment(storage *Storage, wsManager *WSManager) http.Handle
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			respondError(w, http.StatusBadRequest, "Invalid appointment ID")
 			return
 		}
@@ -561,7 +561,7 @@ func handleDeleteAppointment(storage *Storage, wsManager *WSManager) http.Handle
 
 		vars := mux.Vars(r)
 		appointmentID := parseID(vars["appointmentID"])
-		if appointmentID == 0 {
+		if appointmentID == "" {
 			respondError(w, http.StatusBadRequest, "Invalid appointment ID")
 			return
 		}

@@ -31,14 +31,14 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 	type groupPayload struct {
 		Name            string    `json:"name"`
 		Description     string    `json:"description"`
-		CreatorID       int64     `json:"creator_id"`
+		CreatorID       string    `json:"creator_id"`
 		CreatorUsername string    `json:"creator_username"`
 		GroupType       GroupType `json:"group_type"`
 	}
 
 	type memberPayload struct {
-		GroupID  int64  `json:"group_id"`
-		UserID   int64  `json:"user_id"`
+		GroupID  string `json:"group_id"`
+		UserID   string `json:"user_id"`
 		Username string `json:"username"` // For ID mapping during reconciliation
 		Rank     int    `json:"rank"`
 	}
@@ -128,7 +128,7 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 
 						// CRITICAL: Map remote creator ID to local creator ID using username
 						// During partitions, the same user may have different IDs in different partitions.
-						var localCreatorID int64
+						var localCreatorID string
 						if p.CreatorUsername != "" {
 							if localCreator, err := store.GetUserByUsername(p.CreatorUsername); err == nil && localCreator != nil {
 								localCreatorID = localCreator.ID
@@ -137,8 +137,7 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 								Logger().Debug("group_reconcile_creator_not_found", "peer", id, "creator_username", p.CreatorUsername)
 								continue
 							}
-						} else if p.CreatorID != 0 {
-							// Fallback: try to use remote ID if username not available (backward compatibility)
+						} else if p.CreatorID != "" {
 							localCreatorID = p.CreatorID
 							Logger().Warn("group_reconcile_no_creator_username", "peer", id, "using_remote_id", p.CreatorID)
 						} else {
@@ -147,7 +146,7 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						}
 
 						// If group already exists locally by natural key, skip
-						if existingID, err := store.FindGroupBySignature(p.Name, localCreatorID, p.GroupType); err == nil && existingID != 0 {
+						if existingID, err := store.FindGroupBySignature(p.Name, localCreatorID, p.GroupType); err == nil && existingID != "" {
 							continue
 						}
 						g := &Group{
@@ -224,13 +223,13 @@ func StartGroupReconciler(store *Storage, cons Consensus, peers PeerStore) {
 						if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
 							continue
 						}
-						if p.GroupID == 0 {
+						if p.GroupID == "" {
 							continue
 						}
 
 						// CRITICAL: Map remote user ID to local user ID using username.
 						// Do NOT fallback to remote IDs: IDs may diverge across partitions.
-						var localUserID int64
+						var localUserID string
 						if strings.TrimSpace(p.Username) == "" {
 							Logger().Warn("group_member_reconcile_missing_username", "peer", id, "group_id", p.GroupID)
 							continue
